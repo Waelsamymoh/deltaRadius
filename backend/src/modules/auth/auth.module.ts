@@ -7,6 +7,8 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { AdminUser } from '../../database/entities/admin-user.entity';
+import { Tenant } from '../../database/entities/tenant.entity';
+import { TenantsModule } from '../tenants/tenants.module';
 
 @Module({
   imports: [
@@ -18,7 +20,8 @@ import { AdminUser } from '../../database/entities/admin-user.entity';
         signOptions: { expiresIn: '24h' },
       }),
     }),
-    TypeOrmModule.forFeature([AdminUser]),
+    TypeOrmModule.forFeature([AdminUser, Tenant]),
+    TenantsModule,
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtStrategy],

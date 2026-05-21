@@ -42,17 +42,16 @@ export class QuotaEnforcerService implements OnModuleInit {
   // ── Public: sync on demand (called after kick/reconnect) ──────────────────
 
   async syncUsage(username: string, tenantId: number | null): Promise<void> {
-    // Filter by radacctid (auto-increment, timezone-independent). Renewal sets
-    // quota_reset_radacct_id = MAX(radacctid) AND kicks the user, so any session
-    // started after renewal has radacctid > that value.
+    // Filter radacct by tenant_id to isolate bytes per tenant — same username
+    // on different tenants gets independent quota tracking.
     await this.dataSource.query(`
       INSERT INTO user_data_usage (username, tenant_id, total_download_bytes, total_upload_bytes, updated_at)
       VALUES (
-        $1, $2,
-        (SELECT COALESCE(SUM(acctoutputoctets),0)::bigint FROM radacct WHERE username = $1
-           AND radacctid > COALESCE((SELECT quota_reset_radacct_id FROM user_data_usage WHERE username=$1 AND COALESCE(tenant_id,-1)=COALESCE($2,-1)),0)),
-        (SELECT COALESCE(SUM(acctinputoctets), 0)::bigint FROM radacct WHERE username = $1
-           AND radacctid > COALESCE((SELECT quota_reset_radacct_id FROM user_data_usage WHERE username=$1 AND COALESCE(tenant_id,-1)=COALESCE($2,-1)),0)),
+        $1::text, $2,
+        GREATEST(0, (SELECT COALESCE(SUM(acctoutputoctets),0)::bigint FROM radacct WHERE username = $1::text AND COALESCE(tenant_id,-1) = COALESCE($2,-1))
+          - COALESCE((SELECT quota_baseline_out_bytes FROM user_data_usage WHERE username=$1::text AND COALESCE(tenant_id,-1)=COALESCE($2,-1)),0)),
+        GREATEST(0, (SELECT COALESCE(SUM(acctinputoctets), 0)::bigint FROM radacct WHERE username = $1::text AND COALESCE(tenant_id,-1) = COALESCE($2,-1))
+          - COALESCE((SELECT quota_baseline_in_bytes  FROM user_data_usage WHERE username=$1::text AND COALESCE(tenant_id,-1)=COALESCE($2,-1)),0)),
         NOW()
       )
       ON CONFLICT (username, COALESCE(tenant_id, -1)) DO UPDATE SET
@@ -65,56 +64,96 @@ export class QuotaEnforcerService implements OnModuleInit {
   // ── Main loop ─────────────────────────────────────────────────────────────
 
   private async syncAndEnforce(): Promise<void> {
+    await this.expireOldTopups().catch(e => this.logger.error(e));
     await this.syncAllUsage();
     await this.enforce();
     await this.voucherCardsService.activateFirstUseCards().catch(e => this.logger.error(e));
   }
 
-  private async syncAllUsage(): Promise<void> {
-    // Filter by radacctid (auto-increment, timezone-independent). Avoids MikroTik
-    // clock skew issues where acctstarttime can be hours ahead/behind real time.
+  /** Remove topups past their expires_at — bonus pools shrink and rows disappear */
+  private async expireOldTopups(): Promise<void> {
+    // Find expired topups, group by user, sum the bytes to deduct
+    const expired: { id: number; username: string; tenant_id: number | null; size_gb: string }[] =
+      await this.dataSource.query(
+        `SELECT id, username, tenant_id, size_gb
+         FROM user_topups
+         WHERE expires_at IS NOT NULL AND expires_at <= NOW()`,
+      );
+    if (!expired.length) return;
+
+    // Aggregate bytes per (username, tenant_id) for profile adjustment
+    const totals: Record<string, bigint> = {};
+    for (const t of expired) {
+      const key = `${t.username}|${t.tenant_id ?? -1}`;
+      const bytes = BigInt(Math.floor(Number(t.size_gb) * 1024 ** 3));
+      totals[key] = (totals[key] ?? 0n) + bytes;
+    }
+
+    await this.dataSource.transaction(async (m) => {
+      // Delete expired topup rows
+      await m.query(
+        `DELETE FROM user_topups WHERE id = ANY($1::int[])`,
+        [expired.map(t => t.id)],
+      );
+      // Adjust profile.bonus_remaining_bytes
+      for (const [key, bytes] of Object.entries(totals)) {
+        const [username, tenantStr] = key.split('|');
+        const tenantId = tenantStr === '-1' ? null : Number(tenantStr);
+        const where = tenantId !== null
+          ? `username = $1 AND tenant_id = $3`
+          : `username = $1 AND tenant_id IS NULL`;
+        const params = tenantId !== null ? [username, String(bytes), tenantId] : [username, String(bytes)];
+        await m.query(
+          `UPDATE user_profiles
+             SET bonus_remaining_bytes = GREATEST(0, COALESCE(bonus_remaining_bytes,0)::bigint - $2::bigint)
+           WHERE ${where}`,
+          params,
+        );
+      }
+    });
+
+    this.logger.log(`Expired ${expired.length} topup(s) — bonus pools adjusted`);
+  }
+
+  async syncAllUsage(): Promise<void> {
+    // Per-tenant isolation: join radacct on tenant_id so bytes from one
+    // tenant's NAS never bleed into another tenant's quota.
     await this.dataSource.query(`
       INSERT INTO user_data_usage (username, tenant_id, total_download_bytes, total_upload_bytes, updated_at)
       SELECT
         up.username,
         up.tenant_id,
-        COALESCE(SUM(ra.acctoutputoctets), 0)::bigint,
-        COALESCE(SUM(ra.acctinputoctets),  0)::bigint,
+        GREATEST(0, COALESCE(SUM(ra.acctoutputoctets), 0)::bigint - COALESCE(u2.quota_baseline_out_bytes, 0)),
+        GREATEST(0, COALESCE(SUM(ra.acctinputoctets),  0)::bigint - COALESCE(u2.quota_baseline_in_bytes,  0)),
         NOW()
       FROM user_profiles up
       LEFT JOIN radacct ra ON ra.username = up.username
-        AND ra.radacctid > COALESCE(
-          (SELECT quota_reset_radacct_id FROM user_data_usage u2
-           WHERE u2.username = up.username
-             AND COALESCE(u2.tenant_id,-1) = COALESCE(up.tenant_id,-1)),
-          0
-        )
-      GROUP BY up.username, up.tenant_id
+        AND COALESCE(ra.tenant_id, -1) = COALESCE(up.tenant_id, -1)
+      LEFT JOIN user_data_usage u2 ON u2.username = up.username
+        AND COALESCE(u2.tenant_id,-1) = COALESCE(up.tenant_id,-1)
+      GROUP BY up.username, up.tenant_id, u2.quota_baseline_out_bytes, u2.quota_baseline_in_bytes
       ON CONFLICT (username, COALESCE(tenant_id, -1)) DO UPDATE SET
         total_download_bytes = EXCLUDED.total_download_bytes,
         total_upload_bytes   = EXCLUDED.total_upload_bytes,
         updated_at           = EXCLUDED.updated_at
     `);
 
-    // Same sync for voucher cards (code = radius username, not in user_profiles)
+    // Same sync for voucher cards
     await this.dataSource.query(`
       INSERT INTO user_data_usage (username, tenant_id, total_download_bytes, total_upload_bytes, updated_at)
       SELECT
         vc.code,
         vc.tenant_id,
-        COALESCE(SUM(ra.acctoutputoctets), 0)::bigint,
-        COALESCE(SUM(ra.acctinputoctets),  0)::bigint,
+        GREATEST(0, COALESCE(SUM(ra.acctoutputoctets), 0)::bigint - COALESCE(u2.quota_baseline_out_bytes, 0)),
+        GREATEST(0, COALESCE(SUM(ra.acctinputoctets),  0)::bigint - COALESCE(u2.quota_baseline_in_bytes,  0)),
         NOW()
       FROM voucher_cards vc
       LEFT JOIN radacct ra ON ra.username = vc.code
-        AND ra.radacctid > COALESCE(
-          (SELECT quota_reset_radacct_id FROM user_data_usage u2
-           WHERE u2.username = vc.code
-             AND COALESCE(u2.tenant_id,-1) = COALESCE(vc.tenant_id,-1)),
-          0
-        )
+        AND COALESCE(ra.tenant_id, -1) = COALESCE(vc.tenant_id, -1)
+      LEFT JOIN user_data_usage u2 ON u2.username = vc.code
+        AND COALESCE(u2.tenant_id,-1) = COALESCE(vc.tenant_id,-1)
       WHERE vc.status IN ('active','unused')
-      GROUP BY vc.code, vc.tenant_id
+      GROUP BY vc.code, vc.tenant_id, u2.quota_baseline_out_bytes, u2.quota_baseline_in_bytes
       ON CONFLICT (username, COALESCE(tenant_id, -1)) DO UPDATE SET
         total_download_bytes = EXCLUDED.total_download_bytes,
         total_upload_bytes   = EXCLUDED.total_upload_bytes,
@@ -123,7 +162,10 @@ export class QuotaEnforcerService implements OnModuleInit {
   }
 
   private async enforce(): Promise<void> {
-    // Find users with active sessions whose cumulative download >= plan limit
+    // Write a heartbeat marker so we can verify the loop is actually firing
+    try { require('fs').appendFileSync('/tmp/quota-enforce.log', `[${new Date().toISOString()}] enforce() called\n`); } catch {}
+    // Find users whose cumulative usage >= plan limit (active OR offline — we
+    // need to block re-auth too, otherwise the user just reconnects after kick).
     const rows: {
       username: string;
       tenant_id: number | null;
@@ -142,28 +184,32 @@ export class QuotaEnforcerService implements OnModuleInit {
           (p.download_limit_gb IS NOT NULL AND p.download_limit_gb > 0
             AND u.total_download_bytes >= (p.download_limit_gb * 1024 * 1024 * 1024 + COALESCE(up.bonus_remaining_bytes,0)))
         )
-        AND EXISTS (
-          SELECT 1 FROM radacct ra
-          WHERE ra.username = u.username AND ra.acctstoptime IS NULL
-        )
     `);
 
+    try { require('fs').appendFileSync('/tmp/quota-enforce.log', `  over-quota rows: ${rows.length}\n`); } catch {}
     for (const row of rows) {
-      const profile = await this.profileRepo.findOne({
-        where: { username: row.username, ...(row.tenant_id ? { tenantId: row.tenant_id } : {}) },
-        relations: ['plan'],
-      });
-      if (!profile?.plan) continue;
+      try {
+        const profile = await this.profileRepo.findOne({
+          where: { username: row.username, ...(row.tenant_id ? { tenantId: row.tenant_id } : {}) },
+          relations: ['plan'],
+        });
+        try { require('fs').appendFileSync('/tmp/quota-enforce.log', `  user=${row.username} profile=${!!profile} plan=${!!profile?.plan} action=${profile?.plan?.quotaAction}\n`); } catch {}
+        if (!profile?.plan) continue;
 
-      const plan = profile.plan;
-      this.logger.log(
-        `Quota exceeded: ${row.username} — used ${Number(row.total_download_bytes) / 1024 ** 3}GB / ${plan.downloadLimitGb}GB — action: ${plan.quotaAction}`,
-      );
+        const plan = profile.plan;
+        this.logger.log(
+          `Quota exceeded: ${row.username} — used ${Number(row.total_download_bytes) / 1024 ** 3}GB / ${plan.downloadLimitGb}GB — action: ${plan.quotaAction}`,
+        );
 
-      if (plan.quotaAction === 'disconnect') {
-        await this.kickUser(row.username);
-      } else if (plan.quotaAction === 'switch' && plan.fallbackPlanId) {
-        await this.switchPlan(row.username, row.tenant_id, profile, plan.fallbackPlanId);
+        if (plan.quotaAction === 'disconnect') {
+          await this.blockAuth(row.username, row.tenant_id);
+          await this.kickUser(row.username);
+          try { require('fs').appendFileSync('/tmp/quota-enforce.log', `  → blocked + kicked ${row.username}\n`); } catch {}
+        } else if (plan.quotaAction === 'switch' && plan.fallbackPlanId) {
+          await this.switchPlan(row.username, row.tenant_id, profile, plan.fallbackPlanId);
+        }
+      } catch (e: any) {
+        try { require('fs').appendFileSync('/tmp/quota-enforce.log', `  ERROR for ${row.username}: ${e?.message || e}\n`); } catch {}
       }
     }
 
@@ -299,6 +345,80 @@ export class QuotaEnforcerService implements OnModuleInit {
     return attrs;
   }
 
+  // ── Auth blocking (quota exhausted) ───────────────────────────────────────
+
+  // Use an impossible Calling-Station-Id match to block — leaves the user's
+  // original Auth-Type/Cleartext-Password intact so removing the block restores
+  // normal authentication.
+  private static BLOCK_MARKER = '__QUOTA_EXHAUSTED__';
+
+  /** Block future re-auth — adds a Calling-Station-Id check that can't match */
+  async blockAuth(username: string, tenantId: number | null): Promise<void> {
+    if (tenantId !== null) {
+      await this.dataSource.query(
+        `DELETE FROM radcheck WHERE username = $1 AND attribute = 'Calling-Station-Id' AND value = $2 AND tenant_id = $3`,
+        [username, QuotaEnforcerService.BLOCK_MARKER, tenantId],
+      );
+      await this.dataSource.query(
+        `INSERT INTO radcheck (username, attribute, op, value, tenant_id)
+         VALUES ($1, 'Calling-Station-Id', '==', $2, $3)`,
+        [username, QuotaEnforcerService.BLOCK_MARKER, tenantId],
+      );
+      await this.dataSource.query(
+        `DELETE FROM radreply WHERE username = $1 AND attribute = 'Reply-Message' AND tenant_id = $2`,
+        [username, tenantId],
+      );
+      await this.dataSource.query(
+        `INSERT INTO radreply (username, attribute, op, value, tenant_id)
+         VALUES ($1, 'Reply-Message', ':=', 'تم استنفاد الكوتا — جدد اشتراكك', $2)`,
+        [username, tenantId],
+      );
+    } else {
+      await this.dataSource.query(
+        `DELETE FROM radcheck WHERE username = $1 AND attribute = 'Calling-Station-Id' AND value = $2 AND tenant_id IS NULL`,
+        [username, QuotaEnforcerService.BLOCK_MARKER],
+      );
+      await this.dataSource.query(
+        `INSERT INTO radcheck (username, attribute, op, value, tenant_id)
+         VALUES ($1, 'Calling-Station-Id', '==', $2, NULL)`,
+        [username, QuotaEnforcerService.BLOCK_MARKER],
+      );
+      await this.dataSource.query(
+        `DELETE FROM radreply WHERE username = $1 AND attribute = 'Reply-Message' AND tenant_id IS NULL`,
+        [username],
+      );
+      await this.dataSource.query(
+        `INSERT INTO radreply (username, attribute, op, value, tenant_id)
+         VALUES ($1, 'Reply-Message', ':=', 'تم استنفاد الكوتا — جدد اشتراكك', NULL)`,
+        [username],
+      );
+    }
+    this.logger.log(`Auth blocked for ${username} (quota exhausted)`);
+  }
+
+  /** Remove the auth block (called on renewal/plan change) */
+  async unblockAuth(username: string, tenantId: number | null): Promise<void> {
+    if (tenantId !== null) {
+      await this.dataSource.query(
+        `DELETE FROM radcheck WHERE username = $1 AND attribute = 'Calling-Station-Id' AND value = $2 AND tenant_id = $3`,
+        [username, QuotaEnforcerService.BLOCK_MARKER, tenantId],
+      );
+      await this.dataSource.query(
+        `DELETE FROM radreply WHERE username = $1 AND attribute = 'Reply-Message' AND tenant_id = $2`,
+        [username, tenantId],
+      );
+    } else {
+      await this.dataSource.query(
+        `DELETE FROM radcheck WHERE username = $1 AND attribute = 'Calling-Station-Id' AND value = $2 AND tenant_id IS NULL`,
+        [username, QuotaEnforcerService.BLOCK_MARKER],
+      );
+      await this.dataSource.query(
+        `DELETE FROM radreply WHERE username = $1 AND attribute = 'Reply-Message' AND tenant_id IS NULL`,
+        [username],
+      );
+    }
+  }
+
   // ── CoA / Disconnect ──────────────────────────────────────────────────────
 
   async sendCoAForPlan(username: string, plan: Plan, bonusBytes: bigint = 0n): Promise<void> {
@@ -393,3 +513,4 @@ export class QuotaEnforcerService implements OnModuleInit {
     });
   }
 }
+

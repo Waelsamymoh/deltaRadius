@@ -36,6 +36,12 @@ export class UserTopup {
   @CreateDateColumn({ name: 'applied_at' })
   appliedAt: Date;
 
+  @Column({ name: 'expires_at', type: 'timestamptz', nullable: true })
+  expiresAt: Date | null;
+
+  @Column({ name: 'consumed_bytes', type: 'bigint', default: 0 })
+  consumedBytes: string;
+
   @Column({ name: 'applied_by', nullable: true })
   appliedBy: number | null;
 

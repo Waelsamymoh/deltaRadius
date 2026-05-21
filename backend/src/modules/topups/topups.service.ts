@@ -87,6 +87,10 @@ export class TopupsService {
     let saved: UserTopup;
     let planToApply: Plan | null = null;
 
+    // Each topup is independent of the main plan and has a 30-day shelf life.
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 30);
+
     await this.dataSource.transaction(async (m) => {
       // Insert topup record
       saved = await m.save(UserTopup, {
@@ -96,6 +100,7 @@ export class TopupsService {
         sizeGb: pkg.sizeGb,
         price: pkg.price,
         appliedBy: admin.id,
+        expiresAt,
       });
 
       // Add to bonus pool
@@ -133,6 +138,16 @@ export class TopupsService {
 
       // Update quota check attrs in radcheck (used by FreeRADIUS sqlcounter) = plan_limit + bonus
       await this.updateQuotaCheckAttrs(m, username, tenantId, effectivePlan, profile.bonusRemainingBytes);
+
+      // Top-up adds quota — clear any auth block from quota exhaustion
+      await m.query(
+        `DELETE FROM radcheck WHERE username = $1 AND attribute = 'Calling-Station-Id' AND value = '__QUOTA_EXHAUSTED__'`,
+        [username],
+      );
+      await m.query(
+        `DELETE FROM radreply WHERE username = $1 AND attribute = 'Reply-Message' AND value LIKE '%الكوتا%'`,
+        [username],
+      );
     });
 
     // Send CoA so MikroTik picks up new limits (and speed, if restored)
@@ -161,6 +176,86 @@ export class TopupsService {
       where: tenantId ? { username, tenantId } : { username },
       order: { appliedAt: 'DESC' },
     });
+  }
+
+  /** Clear a single topup row by id (and adjust the bonus pool accordingly) */
+  async clearOneTopup(username: string, topupId: number, user: AdminUser): Promise<{ message: string }> {
+    const tenantId = getTenantId(user);
+    const where = tenantId ? { id: topupId, username, tenantId } : { id: topupId, username };
+    const topup = await this.topupRepo.findOne({ where });
+    if (!topup) throw new NotFoundException('باقة إضافية غير موجودة');
+
+    const profile = await this.profileRepo.findOne({
+      where: tenantId ? { username, tenantId } : { username },
+    });
+    if (!profile) throw new NotFoundException(`User '${username}' not found`);
+
+    const topupBytes = BigInt(Math.floor(Number(topup.sizeGb) * 1024 ** 3));
+    const currentBonus = BigInt(profile.bonusRemainingBytes || '0');
+    const newBonus = currentBonus > topupBytes ? currentBonus - topupBytes : 0n;
+
+    await this.dataSource.transaction(async (m) => {
+      profile.bonusRemainingBytes = String(newBonus);
+      await m.save(UserProfile, profile);
+      await m.delete(UserTopup, where);
+      // Rewrite radreply attrs with adjusted bonus pool
+      const plan = profile.planId ? await this.planRepo.findOne({
+        where: tenantId ? { id: profile.planId, tenantId } : { id: profile.planId },
+      }) : null;
+      if (plan) {
+        await m.delete(RadReply, tenantId ? { username, tenantId } : { username });
+        for (const a of this.buildReplyAttrs(plan, newBonus)) {
+          await m.save(RadReply, { username, ...a, tenantId });
+        }
+        await this.updateQuotaCheckAttrs(m, username, tenantId, plan, String(newBonus));
+      }
+    });
+
+    if (profile.planId) {
+      const plan = await this.planRepo.findOne({
+        where: tenantId ? { id: profile.planId, tenantId } : { id: profile.planId },
+      });
+      if (plan) this.quotaEnforcer.sendCoAForPlan(username, plan, newBonus).catch(e => this.logger.error(e));
+    }
+
+    return { message: `تم مسح الباقة الإضافية` };
+  }
+
+  /** Clear the user's bonus pool — zero out remaining bytes and remove topup history */
+  async clearUserBonus(username: string, user: AdminUser): Promise<{ message: string }> {
+    const tenantId = getTenantId(user);
+    const where = tenantId ? { username, tenantId } : { username };
+    const profile = await this.profileRepo.findOne({ where });
+    if (!profile) throw new NotFoundException(`User '${username}' not found`);
+
+    await this.dataSource.transaction(async (m) => {
+      // Zero out bonus pool on profile
+      profile.bonusRemainingBytes = '0';
+      await m.save(UserProfile, profile);
+      // Drop topup history rows for this user
+      await m.delete(UserTopup, where);
+      // Rewrite radreply attrs without bonus (uses plan limits only)
+      const plan = profile.planId ? await this.planRepo.findOne({
+        where: tenantId ? { id: profile.planId, tenantId } : { id: profile.planId },
+      }) : null;
+      if (plan) {
+        await m.delete(RadReply, tenantId ? { username, tenantId } : { username });
+        for (const a of this.buildReplyAttrs(plan, 0n)) {
+          await m.save(RadReply, { username, ...a, tenantId });
+        }
+        await this.updateQuotaCheckAttrs(m, username, tenantId, plan, '0');
+      }
+    });
+
+    // Push CoA so MikroTik picks up the cleared limits
+    if (profile.planId) {
+      const plan = await this.planRepo.findOne({
+        where: tenantId ? { id: profile.planId, tenantId } : { id: profile.planId },
+      });
+      if (plan) this.quotaEnforcer.sendCoAForPlan(username, plan, 0n).catch(e => this.logger.error(e));
+    }
+
+    return { message: `تم مسح الباقات الإضافية للمشترك ${username}` };
   }
 
   // ── Renewal recompute ─────────────────────────────────────────────────────

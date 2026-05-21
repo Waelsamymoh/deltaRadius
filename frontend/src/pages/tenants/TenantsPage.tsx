@@ -1,9 +1,10 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { Plus, Pencil, Trash2, Building2, KeyRound } from 'lucide-react'
+import { Plus, Pencil, Trash2, Building2, Download, ExternalLink, Archive, ArchiveRestore } from 'lucide-react'
 import { tenantsApi } from '@/api/endpoints'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -18,7 +19,6 @@ const schema = z.object({
   name: z.string().min(1, 'مطلوب'),
   subdomain: z.string().optional(),
   businessName: z.string().optional(),
-  adminPassword: z.string().min(6).optional().or(z.literal('')),
 })
 type FormData = z.infer<typeof schema>
 
@@ -28,18 +28,36 @@ type Tenant = {
   subdomain: string | null
   businessName: string | null
   isActive: boolean
+  isArchived: boolean
   createdAt: string
+  sstpUsername: string | null
+  sstpIp: string | null
+  /** Static IPs assigned to this tenant's NAS devices (one per device) */
+  nasIps: string[]
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
 }
 
 export default function TenantsPage() {
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const [open, setOpen] = useState(false)
-  const [editingId, setEditingId] = useState<number | null>(null)
-  const [deleteTarget, setDeleteTarget] = useState<Tenant | null>(null)
+  const [archiveTarget, setArchiveTarget] = useState<Tenant | null>(null)
+  const [permanentTarget, setPermanentTarget] = useState<Tenant | null>(null)
+  const [showArchived, setShowArchived] = useState(false)
 
   const { data: tenants = [], isLoading } = useQuery<Tenant[]>({
-    queryKey: ['tenants'],
-    queryFn: () => tenantsApi.list().then(r => r.data),
+    queryKey: ['tenants', { showArchived }],
+    queryFn: () => tenantsApi.list(showArchived).then(r => r.data),
   })
 
   const { register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<FormData>({
@@ -51,37 +69,32 @@ export default function TenantsPage() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['tenants'] }); closeDialog() },
   })
 
-  const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: number; data: FormData }) => tenantsApi.update(id, data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tenants'] }); closeDialog() },
+  const archiveMutation = useMutation({
+    mutationFn: (id: number) => tenantsApi.archive(id),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tenants'] }); setArchiveTarget(null) },
   })
 
-  const deleteMutation = useMutation({
-    mutationFn: (id: number) => tenantsApi.remove(id),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tenants'] }); setDeleteTarget(null) },
+  const restoreMutation = useMutation({
+    mutationFn: (id: number) => tenantsApi.restore(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['tenants'] }),
   })
 
-  const resetPasswordMutation = useMutation({
-    mutationFn: ({ id, password }: { id: number; password: string }) =>
-      tenantsApi.resetAdminPassword(id, password),
+  const permanentMutation = useMutation({
+    mutationFn: (id: number) => tenantsApi.removePermanent(id),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tenants'] }); setPermanentTarget(null) },
   })
 
-  const openCreate = () => { reset({ name: '', subdomain: '', businessName: '' }); setEditingId(null); setOpen(true) }
-  const openEdit = (t: Tenant) => {
-    reset({ name: t.name, subdomain: t.subdomain ?? '', businessName: t.businessName ?? '' })
-    setEditingId(t.id)
+  const openCreate = () => {
+    reset({ name: '', subdomain: '', businessName: '' })
     setOpen(true)
   }
-  const closeDialog = () => { setOpen(false); setEditingId(null); reset() }
+  const closeDialog = () => { setOpen(false); reset() }
 
-  const onSubmit = async (data: FormData) => {
-    const { adminPassword, ...tenantData } = data
-    if (editingId !== null) {
-      await updateMutation.mutateAsync({ id: editingId, data: tenantData })
-      if (adminPassword) await resetPasswordMutation.mutateAsync({ id: editingId, password: adminPassword })
-    } else {
-      createMutation.mutate(tenantData)
-    }
+  const onSubmit = (data: FormData) => createMutation.mutate(data)
+
+  const downloadScript = async (t: Tenant) => {
+    const res = await tenantsApi.downloadMikrotikScript(t.id)
+    downloadBlob(res.data, `mikrotik-${t.subdomain || t.name}.rsc`)
   }
 
   return (
@@ -91,7 +104,7 @@ export default function TenantsPage() {
           <h1 className="text-3xl font-bold flex items-center gap-2">
             <Building2 className="h-7 w-7" /> العملاء
           </h1>
-          <p className="text-muted-foreground mt-1">إدارة حسابات العملاء وشبكاتهم المعزولة</p>
+          <p className="text-muted-foreground mt-1">إدارة حسابات العملاء وشبكاتهم المعزولة — انقر على أي عميل لفتح لوحة التحكم الخاصة به</p>
         </div>
         <Button onClick={openCreate} className="gap-2">
           <Plus className="h-4 w-4" /> عميل جديد
@@ -100,9 +113,21 @@ export default function TenantsPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">
-            العملاء <Badge variant="secondary" className="ml-2">{tenants.length}</Badge>
-          </CardTitle>
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <CardTitle className="text-base">
+              {showArchived ? 'العملاء (شامل المؤرشف)' : 'العملاء'}
+              <Badge variant="secondary" className="ml-2">{tenants.length}</Badge>
+            </CardTitle>
+            <Button
+              variant={showArchived ? 'default' : 'outline'}
+              size="sm"
+              className="gap-1.5"
+              onClick={() => setShowArchived(s => !s)}
+            >
+              <Archive className="h-3.5 w-3.5" />
+              {showArchived ? 'إخفاء المؤرشف' : 'عرض المؤرشف'}
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           {isLoading ? (
@@ -118,6 +143,8 @@ export default function TenantsPage() {
                     <th className="text-left py-2 px-3 font-medium text-muted-foreground">الاسم</th>
                     <th className="text-left py-2 px-3 font-medium text-muted-foreground">اسم الشركة</th>
                     <th className="text-left py-2 px-3 font-medium text-muted-foreground">الـ Subdomain</th>
+                    <th className="text-left py-2 px-3 font-medium text-muted-foreground">SSTP User</th>
+                    <th className="text-left py-2 px-3 font-medium text-muted-foreground">IP الثابت</th>
                     <th className="text-left py-2 px-3 font-medium text-muted-foreground">الحالة</th>
                     <th className="text-left py-2 px-3 font-medium text-muted-foreground">تاريخ الإنشاء</th>
                     <th className="text-right py-2 px-3 font-medium text-muted-foreground">إجراءات</th>
@@ -125,32 +152,101 @@ export default function TenantsPage() {
                 </thead>
                 <tbody>
                   {tenants.map((t) => (
-                    <tr key={t.id} className="border-b hover:bg-muted/30">
+                    <tr
+                      key={t.id}
+                      className={`border-b hover:bg-muted/30 cursor-pointer ${t.isArchived ? 'opacity-60' : ''}`}
+                      onClick={() => navigate(`/tenants/${t.id}`)}
+                    >
                       <td className="py-2 px-3 text-muted-foreground">{t.id}</td>
-                      <td className="py-2 px-3 font-medium">{t.name}</td>
+                      <td className="py-2 px-3 font-medium flex items-center gap-1.5">
+                        {t.name}
+                        <ExternalLink className="h-3 w-3 text-muted-foreground" />
+                      </td>
                       <td className="py-2 px-3 text-muted-foreground">{t.businessName ?? '—'}</td>
                       <td className="py-2 px-3 font-mono text-xs text-blue-600 dark:text-blue-400">
                         {t.subdomain ? `${t.subdomain}.delta-group.online` : '—'}
                       </td>
+                      <td className="py-2 px-3 font-mono text-xs text-muted-foreground">
+                        {t.sstpUsername ?? '—'}
+                      </td>
+                      <td className="py-2 px-3 font-mono text-xs">
+                        {t.nasIps && t.nasIps.length > 0 ? (
+                          <div className="flex flex-wrap gap-1">
+                            {t.nasIps.slice(0, 2).map(ip => (
+                              <span key={ip} className="text-primary font-semibold">{ip}</span>
+                            ))}
+                            {t.nasIps.length > 2 && (
+                              <span className="text-muted-foreground">+{t.nasIps.length - 2}</span>
+                            )}
+                          </div>
+                        ) : t.sstpIp ? (
+                          <span className="text-primary font-semibold">{t.sstpIp}</span>
+                        ) : (
+                          <span className="text-muted-foreground">لا يوجد NAS</span>
+                        )}
+                      </td>
                       <td className="py-2 px-3">
-                        <Badge variant={t.isActive ? 'default' : 'secondary'}>
-                          {t.isActive ? 'نشط' : 'موقوف'}
-                        </Badge>
+                        {t.isArchived
+                          ? <Badge variant="outline" className="gap-1 text-muted-foreground"><Archive className="h-3 w-3" />مؤرشف</Badge>
+                          : <Badge variant={t.isActive ? 'default' : 'secondary'}>
+                              {t.isActive ? 'نشط' : 'موقوف'}
+                            </Badge>
+                        }
                       </td>
                       <td className="py-2 px-3 text-muted-foreground text-xs">
                         {new Date(t.createdAt).toLocaleDateString('ar-EG')}
                       </td>
-                      <td className="py-2 px-3 text-right">
-                        <Button variant="ghost" size="sm" className="h-7 w-7 p-0 mr-1" onClick={() => openEdit(t)}>
+                      <td
+                        className="py-2 px-3 text-right whitespace-nowrap"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {t.sstpUsername && !t.isArchived && (
+                          <Button
+                            variant="ghost" size="sm"
+                            className="h-7 w-7 p-0 mr-1 text-blue-600 hover:text-blue-700"
+                            title="تحميل سكريبت MikroTik"
+                            onClick={() => downloadScript(t)}
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost" size="sm" className="h-7 w-7 p-0 mr-1"
+                          title="فتح لوحة التحكم"
+                          onClick={() => navigate(`/tenants/${t.id}`)}
+                        >
                           <Pencil className="h-3.5 w-3.5" />
                         </Button>
-                        <Button
-                          variant="ghost" size="sm"
-                          className="h-7 w-7 p-0 text-destructive hover:text-destructive"
-                          onClick={() => setDeleteTarget(t)}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
+                        {t.isArchived ? (
+                          <>
+                            <Button
+                              variant="ghost" size="sm"
+                              className="h-7 w-7 p-0 mr-1 text-emerald-500 hover:text-emerald-400"
+                              title="استعادة العميل"
+                              onClick={() => restoreMutation.mutate(t.id)}
+                              disabled={restoreMutation.isPending}
+                            >
+                              <ArchiveRestore className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              variant="ghost" size="sm"
+                              className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+                              title="حذف نهائي"
+                              onClick={() => setPermanentTarget(t)}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </>
+                        ) : (
+                          <Button
+                            variant="ghost" size="sm"
+                            className="h-7 w-7 p-0 text-amber-500 hover:text-amber-400"
+                            title="أرشفة (يقطع اتصاله من MikroTik)"
+                            onClick={() => setArchiveTarget(t)}
+                          >
+                            <Archive className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -161,11 +257,11 @@ export default function TenantsPage() {
         </CardContent>
       </Card>
 
-      {/* Create/Edit Dialog */}
+      {/* Create Dialog — minimal: SSTP creds auto-generated server-side */}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{editingId !== null ? 'تعديل العميل' : 'إضافة عميل جديد'}</DialogTitle>
+            <DialogTitle>إضافة عميل / شبكة جديدة</DialogTitle>
           </DialogHeader>
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
             <div className="space-y-1">
@@ -182,47 +278,76 @@ export default function TenantsPage() {
               <Input {...register('subdomain')} placeholder="future" dir="ltr" className="text-left font-mono" />
               <p className="text-xs text-muted-foreground">مثال: future → future.delta-group.online</p>
             </div>
-            {editingId !== null && (
-              <div className="space-y-1 border-t pt-4">
-                <Label className="flex items-center gap-1.5">
-                  <KeyRound className="h-3.5 w-3.5" />
-                  كلمة مرور المدير <span className="text-muted-foreground text-xs">(اتركها فارغة للإبقاء)</span>
-                </Label>
-                <Input type="password" {...register('adminPassword')} placeholder="••••••••" dir="ltr" />
-                {errors.adminPassword && <p className="text-xs text-destructive">{errors.adminPassword.message}</p>}
-              </div>
-            )}
-            {(updateMutation.isError || resetPasswordMutation.isError) && (
+            <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+              سيتم توليد بيانات SSTP (اسم مستخدم + كلمة مرور + IP ثابت) تلقائياً عند إنشاء العميل،
+              وستجد سكريبت MikroTik جاهز للتحميل من لوحة تحكم العميل بعد الإنشاء.
+            </div>
+            {createMutation.isError && (
               <p className="text-xs text-destructive">
-                {(updateMutation.error as any)?.response?.data?.message ??
-                 (resetPasswordMutation.error as any)?.response?.data?.message ?? 'حدث خطأ'}
+                {(createMutation.error as any)?.response?.data?.message ?? 'حدث خطأ'}
               </p>
             )}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={closeDialog}>إلغاء</Button>
-              <Button type="submit" disabled={isSubmitting || updateMutation.isPending || resetPasswordMutation.isPending}>
-                {(isSubmitting || updateMutation.isPending || resetPasswordMutation.isPending) ? 'جاري الحفظ...' : 'حفظ'}
+              <Button type="submit" disabled={isSubmitting || createMutation.isPending}>
+                {(isSubmitting || createMutation.isPending) ? 'جاري الحفظ...' : 'إنشاء'}
               </Button>
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
-      {/* Delete Confirm Dialog */}
-      <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
+      {/* Archive Confirm Dialog */}
+      <Dialog open={!!archiveTarget} onOpenChange={() => setArchiveTarget(null)}>
         <DialogContent>
-          <DialogHeader><DialogTitle>تأكيد الحذف</DialogTitle></DialogHeader>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Archive className="h-5 w-5 text-amber-500" /> أرشفة العميل
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2 text-sm">
+            <p className="text-muted-foreground">
+              سيتم أرشفة العميل <strong className="text-foreground">{archiveTarget?.name}</strong>،
+              وقطع اتصاله الحالي من MikroTik مباشرة (بدون إيقاف خدمة SSTP) ومنعه من إعادة الاتصال.
+            </p>
+            <p className="text-xs text-muted-foreground bg-muted/30 border border-border rounded p-2">
+              البيانات لن تُحذف — يمكنك استعادة العميل لاحقاً من قائمة "عرض المؤرشف".
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setArchiveTarget(null)}>إلغاء</Button>
+            <Button
+              className="gap-1.5"
+              onClick={() => archiveTarget && archiveMutation.mutate(archiveTarget.id)}
+              disabled={archiveMutation.isPending}
+            >
+              <Archive className="h-4 w-4" />
+              {archiveMutation.isPending ? 'جاري الأرشفة...' : 'أرشفة وفصل الاتصال'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Permanent Delete Confirm Dialog */}
+      <Dialog open={!!permanentTarget} onOpenChange={() => setPermanentTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <Trash2 className="h-5 w-5" /> حذف نهائي
+            </DialogTitle>
+          </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            هل أنت متأكد من حذف العميل <strong>{deleteTarget?.name}</strong>؟ سيُحذف جميع بيانات العميل.
+            سيُحذف العميل <strong className="text-foreground">{permanentTarget?.name}</strong> وجميع
+            بياناته نهائياً من قاعدة البيانات. <span className="text-destructive font-bold">لا يمكن التراجع.</span>
           </p>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>إلغاء</Button>
+            <Button variant="outline" onClick={() => setPermanentTarget(null)}>إلغاء</Button>
             <Button
               variant="destructive"
-              onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
-              disabled={deleteMutation.isPending}
+              onClick={() => permanentTarget && permanentMutation.mutate(permanentTarget.id)}
+              disabled={permanentMutation.isPending}
             >
-              {deleteMutation.isPending ? 'جاري الحذف...' : 'حذف'}
+              {permanentMutation.isPending ? 'جاري الحذف...' : 'حذف نهائي'}
             </Button>
           </DialogFooter>
         </DialogContent>

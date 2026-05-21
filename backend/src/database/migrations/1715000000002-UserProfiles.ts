@@ -31,12 +31,14 @@ export class UserProfiles1715000000002 implements MigrationInterface {
         ON "user_profiles" (tenant_id)
     `);
 
-    await queryRunner.query(`
-      GRANT SELECT, INSERT, UPDATE, DELETE ON "user_profiles" TO radius_app
-    `);
-    await queryRunner.query(`
-      GRANT USAGE, SELECT ON SEQUENCE user_profiles_id_seq TO radius_app
-    `);
+    // Only grant if radius_app role exists (not present on Neon/cloud deployments)
+    const [{ exists }] = await queryRunner.query(
+      `SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = 'radius_app') AS exists`,
+    );
+    if (exists) {
+      await queryRunner.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON "user_profiles" TO radius_app`);
+      await queryRunner.query(`GRANT USAGE, SELECT ON SEQUENCE user_profiles_id_seq TO radius_app`);
+    }
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {

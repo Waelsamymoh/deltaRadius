@@ -9,7 +9,7 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
-    allowedHosts: ['delta-group.online'],
+    allowedHosts: true,
     proxy: {
       '/api': 'http://localhost:3000',
     },

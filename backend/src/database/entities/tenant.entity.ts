@@ -25,6 +25,10 @@ export class Tenant {
   @Column({ type: 'varchar', name: 'business_name', nullable: true })
   businessName: string | null;
 
+  /** Contact phone collected during self-registration. */
+  @Column({ type: 'varchar', name: 'contact_phone', length: 20, nullable: true })
+  contactPhone: string | null;
+
   @Column({ unique: true, nullable: true })
   realm: string;
 
@@ -36,6 +40,15 @@ export class Tenant {
 
   @Column({ name: 'is_archived', default: false })
   isArchived: boolean;
+
+  @Column({ type: 'varchar', name: 'sstp_username', nullable: true, unique: true })
+  sstpUsername: string | null;
+
+  @Column({ type: 'varchar', name: 'sstp_password', nullable: true })
+  sstpPassword: string | null;
+
+  @Column({ type: 'varchar', name: 'sstp_ip', nullable: true, unique: true })
+  sstpIp: string | null;
 
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;

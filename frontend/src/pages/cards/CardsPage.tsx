@@ -71,10 +71,10 @@ type EditFormData = z.infer<typeof editSchema>
 const GB = 1024 ** 3
 
 const STATUS_COLORS: Record<string, string> = {
-  unused:   'bg-blue-100 text-blue-700',
-  active:   'bg-green-100 text-green-700',
-  expired:  'bg-red-100 text-red-700',
-  disabled: 'bg-gray-100 text-gray-600',
+  unused:   'bg-primary/15 text-primary border border-primary/20',
+  active:   'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20',
+  expired:  'bg-destructive/15 text-destructive border border-destructive/20',
+  disabled: 'bg-muted/50 text-muted-foreground border border-border',
 }
 const STATUS_LABELS: Record<string, string> = {
   unused: 'غير مستخدم', active: 'نشط', expired: 'منتهي', disabled: 'معطل',
@@ -104,8 +104,8 @@ function CopyBtn({ text }: { text: string }) {
     setTimeout(() => setCopied(false), 1500)
   }
   return (
-    <button onClick={copy} className="p-1 rounded hover:bg-gray-100 text-gray-500 transition-colors">
-      {copied ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}
+    <button onClick={copy} className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
+      {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
     </button>
   )
 }
@@ -117,14 +117,14 @@ function UsageBar({ card }: { card: VoucherCard }) {
 
   const renderBar = (used: number, limitGb: number) => {
     const pct = Math.min(100, (used / (limitGb * GB)) * 100)
-    const color = pct >= 90 ? 'bg-red-500' : pct >= 70 ? 'bg-yellow-500' : 'bg-blue-500'
+    const color = pct >= 90 ? 'bg-destructive' : pct >= 70 ? 'bg-amber-500' : 'bg-primary'
     return (
       <div className="min-w-[100px]">
-        <div className="flex justify-between text-xs text-gray-500 mb-0.5">
+        <div className="flex justify-between text-xs text-muted-foreground mb-0.5">
           <span>{(used / GB).toFixed(2)}</span>
           <span>{limitGb} GB</span>
         </div>
-        <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+        <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
           <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
         </div>
       </div>
@@ -136,8 +136,8 @@ function UsageBar({ card }: { card: VoucherCard }) {
   if (plan?.downloadLimitGb && Number(plan.downloadLimitGb) > 0)
     return renderBar(dl, Number(plan.downloadLimitGb))
   const total = dl + ul
-  if (total === 0) return <span className="text-xs text-gray-400">—</span>
-  return <span className="text-xs text-gray-500">{(total / GB).toFixed(2)} GB</span>
+  if (total === 0) return <span className="text-xs text-muted-foreground">—</span>
+  return <span className="text-xs text-muted-foreground">{(total / GB).toFixed(2)} GB</span>
 }
 
 // ── Main Component ────────────────────────────────────────────────────────────
@@ -421,7 +421,7 @@ ${pages.map(pageHtml).join('')}
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <CreditCard className="w-6 h-6 text-blue-600" />
+          <CreditCard className="w-6 h-6 text-primary" />
           <h1 className="text-xl font-bold">الكروت</h1>
         </div>
         <div className="flex gap-2">
@@ -437,42 +437,42 @@ ${pages.map(pageHtml).join('')}
       </div>
 
       {/* Tabs */}
-      <div className="flex border-b">
+      <div className="flex border-b border-border">
         <button
           onClick={() => setTab('cards')}
           className={`flex items-center gap-2 px-5 py-2.5 text-sm font-medium border-b-2 transition-colors ${
             tab === 'cards'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
+              ? 'border-primary text-primary'
+              : 'border-transparent text-muted-foreground hover:text-foreground'
           }`}
         >
           <List className="w-4 h-4" />
           الكروت
-          {total > 0 && <span className="bg-blue-100 text-blue-700 text-xs px-1.5 py-0.5 rounded-full">{total}</span>}
+          {total > 0 && <span className="bg-primary/15 text-primary text-xs px-1.5 py-0.5 rounded-full">{total}</span>}
         </button>
         <button
           onClick={() => setTab('batches')}
           className={`flex items-center gap-2 px-5 py-2.5 text-sm font-medium border-b-2 transition-colors ${
             tab === 'batches'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
+              ? 'border-primary text-primary'
+              : 'border-transparent text-muted-foreground hover:text-foreground'
           }`}
         >
           <Layers className="w-4 h-4" />
           الدفعات
-          {batches.length > 0 && <span className="bg-gray-100 text-gray-700 text-xs px-1.5 py-0.5 rounded-full">{batches.length}</span>}
+          {batches.length > 0 && <span className="bg-muted text-foreground/80 text-xs px-1.5 py-0.5 rounded-full">{batches.length}</span>}
         </button>
         <button
           onClick={() => setTab('settings')}
           className={`flex items-center gap-2 px-5 py-2.5 text-sm font-medium border-b-2 transition-colors ${
             tab === 'settings'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
+              ? 'border-primary text-primary'
+              : 'border-transparent text-muted-foreground hover:text-foreground'
           }`}
         >
           <Settings className="w-4 h-4" />
           إعدادات الطباعة
-          {printLogo && <span className="w-2 h-2 rounded-full bg-green-500" title="يوجد لوجو" />}
+          {printLogo && <span className="w-2 h-2 rounded-full bg-emerald-500" title="يوجد لوجو" />}
         </button>
       </div>
 
@@ -496,7 +496,7 @@ ${pages.map(pageHtml).join('')}
                 <select
                   value={statusFilter}
                   onChange={e => handleFilterChange('status', e.target.value)}
-                  className="border rounded-md px-3 py-2 text-sm bg-white"
+                  className="border border-input rounded-md px-3 py-2 text-sm bg-background text-foreground"
                 >
                   <option value="">كل الحالات</option>
                   <option value="unused">غير مستخدم</option>
@@ -507,7 +507,7 @@ ${pages.map(pageHtml).join('')}
                 <select
                   value={planFilter}
                   onChange={e => handleFilterChange('plan', e.target.value)}
-                  className="border rounded-md px-3 py-2 text-sm bg-white"
+                  className="border border-input rounded-md px-3 py-2 text-sm bg-background text-foreground"
                 >
                   <option value="">كل الخطط</option>
                   {plans.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -527,63 +527,63 @@ ${pages.map(pageHtml).join('')}
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b bg-gray-50 text-right">
-                      <th className="px-4 py-3 font-medium text-gray-600">الكود</th>
-                      <th className="px-4 py-3 font-medium text-gray-600">الخطة</th>
-                      <th className="px-4 py-3 font-medium text-gray-600">الدفعة</th>
-                      <th className="px-4 py-3 font-medium text-gray-600">المدة</th>
-                      <th className="px-4 py-3 font-medium text-gray-600">الحالة</th>
-                      <th className="px-4 py-3 font-medium text-gray-600">الصلاحية</th>
-                      <th className="px-4 py-3 font-medium text-gray-600">المصادقة</th>
-                      <th className="px-4 py-3 font-medium text-gray-600">الاستهلاك</th>
-                      <th className="px-4 py-3 font-medium text-gray-600">تاريخ الإنشاء</th>
-                      <th className="px-4 py-3 font-medium text-gray-600">إجراءات</th>
+                    <tr className="border-b border-border bg-muted/30 text-right">
+                      <th className="px-4 py-3 font-medium text-muted-foreground">الكود</th>
+                      <th className="px-4 py-3 font-medium text-muted-foreground">الخطة</th>
+                      <th className="px-4 py-3 font-medium text-muted-foreground">الدفعة</th>
+                      <th className="px-4 py-3 font-medium text-muted-foreground">المدة</th>
+                      <th className="px-4 py-3 font-medium text-muted-foreground">الحالة</th>
+                      <th className="px-4 py-3 font-medium text-muted-foreground">الصلاحية</th>
+                      <th className="px-4 py-3 font-medium text-muted-foreground">المصادقة</th>
+                      <th className="px-4 py-3 font-medium text-muted-foreground">الاستهلاك</th>
+                      <th className="px-4 py-3 font-medium text-muted-foreground">تاريخ الإنشاء</th>
+                      <th className="px-4 py-3 font-medium text-muted-foreground">إجراءات</th>
                     </tr>
                   </thead>
                   <tbody>
                     {cardsLoading ? (
-                      <tr><td colSpan={10} className="text-center py-8 text-gray-400">جاري التحميل...</td></tr>
+                      <tr><td colSpan={10} className="text-center py-8 text-muted-foreground">جاري التحميل...</td></tr>
                     ) : cards.length === 0 ? (
-                      <tr><td colSpan={10} className="text-center py-8 text-gray-400">لا توجد كروت</td></tr>
+                      <tr><td colSpan={10} className="text-center py-8 text-muted-foreground">لا توجد كروت</td></tr>
                     ) : cards.map(card => (
-                      <tr key={card.id} className="border-b hover:bg-gray-50 transition-colors">
+                      <tr key={card.id} className="border-b border-border hover:bg-muted/30 transition-colors">
                         <td className="px-4 py-3">
-                          <div className="flex items-center gap-1 font-mono font-semibold tracking-wider">
+                          <div className="flex items-center gap-1 font-mono font-semibold tracking-wider text-foreground">
                             {card.code}<CopyBtn text={card.code} />
                           </div>
                         </td>
-                        <td className="px-4 py-3 text-gray-700">{card.plan?.name ?? '—'}</td>
-                        <td className="px-4 py-3 text-gray-500 text-xs">{card.batchName ?? '—'}</td>
-                        <td className="px-4 py-3 text-gray-700">{card.durationDays} يوم</td>
+                        <td className="px-4 py-3 text-foreground/80">{card.plan?.name ?? '—'}</td>
+                        <td className="px-4 py-3 text-muted-foreground text-xs">{card.batchName ?? '—'}</td>
+                        <td className="px-4 py-3 text-foreground/80">{card.durationDays} يوم</td>
                         <td className="px-4 py-3">
-                          <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[card.status] ?? 'bg-gray-100 text-gray-600'}`}>
+                          <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[card.status] ?? 'bg-muted/50 text-muted-foreground'}`}>
                             {STATUS_LABELS[card.status] ?? card.status}
                           </span>
                         </td>
-                        <td className="px-4 py-3 text-gray-500 text-xs">
+                        <td className="px-4 py-3 text-muted-foreground text-xs">
                           {card.expiresAt ? new Date(card.expiresAt).toLocaleDateString('ar-EG') : '—'}
                         </td>
                         <td className="px-4 py-3">
                           {card.authMode === 'username_only'
-                            ? <span className="flex items-center gap-1 text-xs text-gray-500"><User className="w-3 h-3" />اسم فقط</span>
-                            : <span className="flex items-center gap-1 text-xs text-gray-500"><KeyRound className="w-3 h-3" />مع كلمة سر</span>
+                            ? <span className="flex items-center gap-1 text-xs text-muted-foreground"><User className="w-3 h-3" />اسم فقط</span>
+                            : <span className="flex items-center gap-1 text-xs text-muted-foreground"><KeyRound className="w-3 h-3" />مع كلمة سر</span>
                           }
                         </td>
                         <td className="px-4 py-3"><UsageBar card={card} /></td>
-                        <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">
+                        <td className="px-4 py-3 text-muted-foreground text-xs whitespace-nowrap">
                           {new Date(card.createdAt).toLocaleDateString('ar-EG')}
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1">
-                            <button onClick={() => openEdit(card)} className="p-1.5 rounded hover:bg-blue-50 text-blue-500" title="تعديل">
+                            <button onClick={() => openEdit(card)} className="p-1.5 rounded hover:bg-primary/10 text-primary" title="تعديل">
                               <Pencil className="w-3.5 h-3.5" />
                             </button>
                             {card.status !== 'used' && card.status !== 'disabled' && (
-                              <button onClick={() => disableMut.mutate(card.id)} className="p-1.5 rounded hover:bg-orange-50 text-orange-500" title="تعطيل">
+                              <button onClick={() => disableMut.mutate(card.id)} className="p-1.5 rounded hover:bg-amber-500/10 text-amber-500" title="تعطيل">
                                 <Ban className="w-3.5 h-3.5" />
                               </button>
                             )}
-                            <button onClick={() => setDeleteCard(card)} className="p-1.5 rounded hover:bg-red-50 text-red-500" title="حذف">
+                            <button onClick={() => setDeleteCard(card)} className="p-1.5 rounded hover:bg-destructive/10 text-destructive" title="حذف">
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
                           </div>
@@ -594,8 +594,8 @@ ${pages.map(pageHtml).join('')}
                 </table>
               </div>
               {totalPages > 1 && (
-                <div className="flex items-center justify-between px-4 py-3 border-t">
-                  <span className="text-sm text-gray-500">صفحة {page} من {totalPages} ({total} كرت)</span>
+                <div className="flex items-center justify-between px-4 py-3 border-t border-border">
+                  <span className="text-sm text-muted-foreground">صفحة {page} من {totalPages} ({total} كرت)</span>
                   <div className="flex items-center gap-2">
                     <Button variant="outline" size="sm" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>
                       <ChevronRight className="w-4 h-4" />
@@ -618,46 +618,46 @@ ${pages.map(pageHtml).join('')}
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b bg-gray-50 text-right">
-                    <th className="px-4 py-3 font-medium text-gray-600">اسم الدفعة</th>
-                    <th className="px-4 py-3 font-medium text-gray-600">الخطة</th>
-                    <th className="px-4 py-3 font-medium text-gray-600">المدة</th>
-                    <th className="px-4 py-3 font-medium text-gray-600">المصادقة</th>
-                    <th className="px-4 py-3 font-medium text-gray-600">الإجمالي</th>
-                    <th className="px-4 py-3 font-medium text-gray-600">التفاصيل</th>
-                    <th className="px-4 py-3 font-medium text-gray-600">تاريخ الإنشاء</th>
-                    <th className="px-4 py-3 font-medium text-gray-600">إجراءات</th>
+                  <tr className="border-b border-border bg-muted/30 text-right">
+                    <th className="px-4 py-3 font-medium text-muted-foreground">اسم الدفعة</th>
+                    <th className="px-4 py-3 font-medium text-muted-foreground">الخطة</th>
+                    <th className="px-4 py-3 font-medium text-muted-foreground">المدة</th>
+                    <th className="px-4 py-3 font-medium text-muted-foreground">المصادقة</th>
+                    <th className="px-4 py-3 font-medium text-muted-foreground">الإجمالي</th>
+                    <th className="px-4 py-3 font-medium text-muted-foreground">التفاصيل</th>
+                    <th className="px-4 py-3 font-medium text-muted-foreground">تاريخ الإنشاء</th>
+                    <th className="px-4 py-3 font-medium text-muted-foreground">إجراءات</th>
                   </tr>
                 </thead>
                 <tbody>
                   {batchesLoading ? (
-                    <tr><td colSpan={8} className="text-center py-8 text-gray-400">جاري التحميل...</td></tr>
+                    <tr><td colSpan={8} className="text-center py-8 text-muted-foreground">جاري التحميل...</td></tr>
                   ) : batches.length === 0 ? (
-                    <tr><td colSpan={8} className="text-center py-8 text-gray-400">لا توجد دفعات</td></tr>
+                    <tr><td colSpan={8} className="text-center py-8 text-muted-foreground">لا توجد دفعات</td></tr>
                   ) : batches.map(batch => (
-                    <tr key={batch.batchName} className="border-b hover:bg-gray-50 transition-colors">
-                      <td className="px-4 py-3 font-medium">{batch.batchName ?? '—'}</td>
-                      <td className="px-4 py-3 text-gray-700">{batch.planName}</td>
-                      <td className="px-4 py-3 text-gray-700">{batch.durationDays} يوم</td>
+                    <tr key={batch.batchName} className="border-b border-border hover:bg-muted/30 transition-colors">
+                      <td className="px-4 py-3 font-medium text-foreground">{batch.batchName ?? '—'}</td>
+                      <td className="px-4 py-3 text-foreground/80">{batch.planName}</td>
+                      <td className="px-4 py-3 text-foreground/80">{batch.durationDays} يوم</td>
                       <td className="px-4 py-3">
                         {batch.authMode === 'username_only'
-                          ? <span className="flex items-center gap-1 text-xs text-gray-500"><User className="w-3 h-3" />اسم فقط</span>
-                          : <span className="flex items-center gap-1 text-xs text-gray-500"><KeyRound className="w-3 h-3" />مع كلمة سر</span>
+                          ? <span className="flex items-center gap-1 text-xs text-muted-foreground"><User className="w-3 h-3" />اسم فقط</span>
+                          : <span className="flex items-center gap-1 text-xs text-muted-foreground"><KeyRound className="w-3 h-3" />مع كلمة سر</span>
                         }
                       </td>
                       <td className="px-4 py-3">
-                        <span className="font-semibold text-gray-800">{batch.total}</span>
-                        <span className="text-gray-400 text-xs mr-1">كرت</span>
+                        <span className="font-semibold text-foreground">{batch.total}</span>
+                        <span className="text-muted-foreground text-xs mr-1">كرت</span>
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap gap-1">
-                          {batch.unused   > 0 && <span className="px-1.5 py-0.5 rounded text-xs bg-blue-100 text-blue-700">{batch.unused} غير مستخدم</span>}
-                          {batch.active   > 0 && <span className="px-1.5 py-0.5 rounded text-xs bg-green-100 text-green-700">{batch.active} نشط</span>}
-                          {batch.expired  > 0 && <span className="px-1.5 py-0.5 rounded text-xs bg-red-100 text-red-700">{batch.expired} منتهي</span>}
-                          {batch.disabled > 0 && <span className="px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-600">{batch.disabled} معطل</span>}
+                          {batch.unused   > 0 && <span className="px-1.5 py-0.5 rounded text-xs bg-primary/15 text-primary border border-primary/20">{batch.unused} غير مستخدم</span>}
+                          {batch.active   > 0 && <span className="px-1.5 py-0.5 rounded text-xs bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">{batch.active} نشط</span>}
+                          {batch.expired  > 0 && <span className="px-1.5 py-0.5 rounded text-xs bg-destructive/15 text-destructive border border-destructive/20">{batch.expired} منتهي</span>}
+                          {batch.disabled > 0 && <span className="px-1.5 py-0.5 rounded text-xs bg-muted/50 text-muted-foreground border border-border">{batch.disabled} معطل</span>}
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">
+                      <td className="px-4 py-3 text-muted-foreground text-xs whitespace-nowrap">
                         {new Date(batch.createdAt).toLocaleDateString('ar-EG')}
                       </td>
                       <td className="px-4 py-3">
@@ -669,21 +669,21 @@ ${pages.map(pageHtml).join('')}
                               setSearch(batch.batchName ?? '')
                               setPage(1)
                             }}
-                            className="p-1.5 rounded hover:bg-blue-50 text-blue-500"
+                            className="p-1.5 rounded hover:bg-primary/10 text-primary"
                             title="عرض الكروت"
                           >
                             <List className="w-3.5 h-3.5" />
                           </button>
                           <button
                             onClick={() => { setPrintBatch(batch); setCardsPerPage(10) }}
-                            className="p-1.5 rounded hover:bg-green-50 text-green-600"
+                            className="p-1.5 rounded hover:bg-emerald-500/10 text-emerald-500"
                             title="طباعة الدفعة"
                           >
                             <Printer className="w-3.5 h-3.5" />
                           </button>
                           <button
                             onClick={() => setDeleteBatch(batch)}
-                            className="p-1.5 rounded hover:bg-red-50 text-red-500"
+                            className="p-1.5 rounded hover:bg-destructive/10 text-destructive"
                             title="حذف الدفعة"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -707,24 +707,24 @@ ${pages.map(pageHtml).join('')}
           <Card>
             <CardContent className="pt-5 space-y-4">
               <div>
-                <h2 className="text-base font-semibold">لوجو صفحة الطباعة</h2>
-                <p className="text-xs text-gray-400 mt-0.5">اختياري — يظهر فوق كل كرت عند الطباعة</p>
+                <h2 className="text-base font-semibold text-foreground">لوجو صفحة الطباعة</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">اختياري — يظهر فوق كل كرت عند الطباعة</p>
               </div>
 
               {printLogo ? (
                 <div className="space-y-3">
-                  <div className="border rounded-xl p-4 flex items-center gap-3 bg-gray-50">
-                    <img src={printLogo} alt="logo" className="h-14 w-14 object-contain rounded-lg border bg-white p-1" />
+                  <div className="border border-border rounded-xl p-4 flex items-center gap-3 bg-muted/30">
+                    <img src={printLogo} alt="logo" className="h-14 w-14 object-contain rounded-lg border border-border bg-background p-1" />
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-700">اللوجو الحالي</p>
-                      <p className="text-xs text-gray-400 mt-0.5">سيظهر على كل كرت</p>
+                      <p className="text-sm font-medium text-foreground">اللوجو الحالي</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">سيظهر على كل كرت</p>
                     </div>
                     <button onClick={() => { localStorage.removeItem('cards_print_logo'); setPrintLogo('') }}
-                      className="p-1.5 rounded-lg hover:bg-red-50 text-red-500">
+                      className="p-1.5 rounded-lg hover:bg-destructive/10 text-destructive">
                       <X className="w-4 h-4" />
                     </button>
                   </div>
-                  <label className="cursor-pointer flex items-center gap-1.5 text-sm text-blue-600 hover:underline">
+                  <label className="cursor-pointer flex items-center gap-1.5 text-sm text-primary hover:underline">
                     <ImagePlus className="w-4 h-4" />تغيير اللوجو
                     <input type="file" accept="image/*" className="hidden" onChange={e => {
                       const file = e.target.files?.[0]; if (!file) return
@@ -736,10 +736,10 @@ ${pages.map(pageHtml).join('')}
                 </div>
               ) : (
                 <label className="cursor-pointer block">
-                  <div className="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center hover:border-blue-400 hover:bg-blue-50 transition-colors">
-                    <ImagePlus className="w-9 h-9 text-gray-300 mx-auto mb-2" />
-                    <p className="text-sm font-medium text-gray-600">اضغط لرفع اللوجو</p>
-                    <p className="text-xs text-gray-400 mt-1">PNG أو JPG — يفضل خلفية شفافة</p>
+                  <div className="border-2 border-dashed border-border rounded-xl p-8 text-center hover:border-primary hover:bg-primary/5 transition-colors">
+                    <ImagePlus className="w-9 h-9 text-muted-foreground mx-auto mb-2" />
+                    <p className="text-sm font-medium text-foreground">اضغط لرفع اللوجو</p>
+                    <p className="text-xs text-muted-foreground mt-1">PNG أو JPG — يفضل خلفية شفافة</p>
                   </div>
                   <input type="file" accept="image/*" className="hidden" onChange={e => {
                     const file = e.target.files?.[0]; if (!file) return
@@ -756,8 +756,8 @@ ${pages.map(pageHtml).join('')}
           <Card>
             <CardContent className="pt-5 space-y-4">
               <div>
-                <h2 className="text-base font-semibold">اسم الشركة</h2>
-                <p className="text-xs text-gray-400 mt-0.5">اختياري — يظهر فوق كل كرت بخط أنيق</p>
+                <h2 className="text-base font-semibold text-foreground">اسم الشركة</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">اختياري — يظهر فوق كل كرت بخط أنيق</p>
               </div>
 
               <div className="space-y-3">
@@ -784,10 +784,14 @@ ${pages.map(pageHtml).join('')}
                       <button
                         key={f.id}
                         onClick={() => { setCompanyFont(f.id); localStorage.setItem('cards_company_font', f.id) }}
-                        className={`border rounded-lg p-2.5 text-center transition-colors ${companyFont === f.id ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:bg-gray-50'}`}
+                        className={`border rounded-lg p-2.5 text-center transition-colors ${
+                          companyFont === f.id
+                            ? 'border-primary bg-primary/10'
+                            : 'border-border hover:bg-muted/30'
+                        }`}
                       >
-                        <div className="text-xs text-gray-400 mb-1">{f.label}</div>
-                        <div style={{ fontFamily: `'${f.id}', serif`, fontSize: 15 }} className="text-gray-800 leading-snug">
+                        <div className="text-xs text-muted-foreground mb-1">{f.label}</div>
+                        <div style={{ fontFamily: `'${f.id}', serif`, fontSize: 15 }} className="text-foreground leading-snug">
                           {companyName || f.sample}
                         </div>
                       </button>
@@ -796,9 +800,9 @@ ${pages.map(pageHtml).join('')}
                 </div>
 
                 {companyName && (
-                  <div className="border rounded-xl p-3 bg-gray-50 text-center">
-                    <p className="text-xs text-gray-400 mb-1">معاينة على الكرت</p>
-                    <div style={{ fontFamily: `'${companyFont}', serif`, fontSize: 18 }} className="text-gray-800">
+                  <div className="border border-border rounded-xl p-3 bg-muted/30 text-center">
+                    <p className="text-xs text-muted-foreground mb-1">معاينة على الكرت</p>
+                    <div style={{ fontFamily: `'${companyFont}', serif`, fontSize: 18 }} className="text-foreground">
                       {companyName}
                     </div>
                   </div>
@@ -806,7 +810,7 @@ ${pages.map(pageHtml).join('')}
 
                 {companyName && (
                   <button onClick={() => { setCompanyName(''); localStorage.removeItem('cards_company_name') }}
-                    className="text-xs text-red-500 hover:underline flex items-center gap-1">
+                    className="text-xs text-destructive hover:underline flex items-center gap-1">
                     <X className="w-3 h-3" />حذف اسم الشركة
                   </button>
                 )}
@@ -827,11 +831,11 @@ ${pages.map(pageHtml).join('')}
             <div className="grid grid-cols-2 gap-3">
               <div className="col-span-2">
                 <Label>الخطة</Label>
-                <select {...register('planId', { valueAsNumber: true })} className="w-full border rounded-md px-3 py-2 text-sm mt-1">
+                <select {...register('planId', { valueAsNumber: true })} className="w-full border border-input bg-background text-foreground rounded-md px-3 py-2 text-sm mt-1">
                   <option value="">اختر خطة</option>
                   {plans.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
-                {errors.planId && <p className="text-red-500 text-xs mt-1">{errors.planId.message}</p>}
+                {errors.planId && <p className="text-destructive text-xs mt-1">{errors.planId.message}</p>}
               </div>
               <div>
                 <Label>الكمية</Label>
@@ -843,7 +847,7 @@ ${pages.map(pageHtml).join('')}
               </div>
               <div>
                 <Label>صيغة الكود</Label>
-                <select {...register('codeFormat')} className="w-full border rounded-md px-3 py-2 text-sm mt-1">
+                <select {...register('codeFormat')} className="w-full border border-input bg-background text-foreground rounded-md px-3 py-2 text-sm mt-1">
                   <option value="alphanumeric">أرقام وحروف</option>
                   <option value="numbers">أرقام فقط</option>
                   <option value="letters">حروف فقط</option>
@@ -855,14 +859,14 @@ ${pages.map(pageHtml).join('')}
               </div>
               <div>
                 <Label>بداية الصلاحية</Label>
-                <select {...register('startMode')} className="w-full border rounded-md px-3 py-2 text-sm mt-1">
+                <select {...register('startMode')} className="w-full border border-input bg-background text-foreground rounded-md px-3 py-2 text-sm mt-1">
                   <option value="first_use">عند الاستخدام الأول</option>
                   <option value="creation">من الإنشاء</option>
                 </select>
               </div>
               <div>
                 <Label>طريقة المصادقة</Label>
-                <select {...register('authMode')} className="w-full border rounded-md px-3 py-2 text-sm mt-1">
+                <select {...register('authMode')} className="w-full border border-input bg-background text-foreground rounded-md px-3 py-2 text-sm mt-1">
                   <option value="both">اسم + كلمة مرور</option>
                   <option value="username_only">اسم فقط</option>
                 </select>
@@ -896,7 +900,7 @@ ${pages.map(pageHtml).join('')}
             <div className="grid grid-cols-2 gap-3">
               <div className="col-span-2">
                 <Label>الخطة</Label>
-                <select {...regEdit('planId', { valueAsNumber: true })} className="w-full border rounded-md px-3 py-2 text-sm mt-1">
+                <select {...regEdit('planId', { valueAsNumber: true })} className="w-full border border-input bg-background text-foreground rounded-md px-3 py-2 text-sm mt-1">
                   {plans.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               </div>
@@ -906,14 +910,14 @@ ${pages.map(pageHtml).join('')}
               </div>
               <div>
                 <Label>بداية الصلاحية</Label>
-                <select {...regEdit('startMode')} className="w-full border rounded-md px-3 py-2 text-sm mt-1">
+                <select {...regEdit('startMode')} className="w-full border border-input bg-background text-foreground rounded-md px-3 py-2 text-sm mt-1">
                   <option value="first_use">عند الاستخدام الأول</option>
                   <option value="creation">من الإنشاء</option>
                 </select>
               </div>
               <div>
                 <Label>طريقة المصادقة</Label>
-                <select {...regEdit('authMode')} className="w-full border rounded-md px-3 py-2 text-sm mt-1">
+                <select {...regEdit('authMode')} className="w-full border border-input bg-background text-foreground rounded-md px-3 py-2 text-sm mt-1">
                   <option value="both">اسم + كلمة مرور</option>
                   <option value="username_only">اسم فقط</option>
                 </select>
@@ -945,8 +949,8 @@ ${pages.map(pageHtml).join('')}
       <Dialog open={!!deleteCard} onOpenChange={() => setDeleteCard(null)}>
         <DialogContent>
           <DialogHeader><DialogTitle>تأكيد الحذف</DialogTitle></DialogHeader>
-          <p className="text-sm text-gray-600">
-            هل أنت متأكد من حذف الكرت <span className="font-mono font-bold">{deleteCard?.code}</span>؟
+          <p className="text-sm text-muted-foreground">
+            هل أنت متأكد من حذف الكرت <span className="font-mono font-bold text-foreground">{deleteCard?.code}</span>؟
             سيتم حذفه من FreeRADIUS أيضاً.
           </p>
           <DialogFooter>
@@ -962,9 +966,9 @@ ${pages.map(pageHtml).join('')}
       <Dialog open={!!deleteBatch} onOpenChange={() => setDeleteBatch(null)}>
         <DialogContent>
           <DialogHeader><DialogTitle>حذف الدفعة</DialogTitle></DialogHeader>
-          <p className="text-sm text-gray-600">
-            هل أنت متأكد من حذف دفعة <span className="font-semibold">"{deleteBatch?.batchName}"</span> بالكامل؟
-            <br />سيتم حذف <span className="font-bold text-red-600">{deleteBatch?.total} كرت</span> نهائياً من قاعدة البيانات وFreeRADIUS.
+          <p className="text-sm text-muted-foreground">
+            هل أنت متأكد من حذف دفعة <span className="font-semibold text-foreground">"{deleteBatch?.batchName}"</span> بالكامل؟
+            <br />سيتم حذف <span className="font-bold text-destructive">{deleteBatch?.total} كرت</span> نهائياً من قاعدة البيانات وFreeRADIUS.
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteBatch(null)}>إلغاء</Button>
@@ -984,23 +988,23 @@ ${pages.map(pageHtml).join('')}
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Printer className="w-5 h-5 text-green-600" />
+              <Printer className="w-5 h-5 text-emerald-500" />
               طباعة دفعة
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-1">
-            <div className="p-3 bg-gray-50 rounded-lg text-sm space-y-1">
+            <div className="p-3 bg-muted/30 border border-border rounded-lg text-sm space-y-1">
               <div className="flex justify-between">
-                <span className="text-gray-500">الدفعة</span>
-                <span className="font-semibold">{printBatch?.batchName}</span>
+                <span className="text-muted-foreground">الدفعة</span>
+                <span className="font-semibold text-foreground">{printBatch?.batchName}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-gray-500">إجمالي الكروت</span>
-                <span className="font-semibold">{printBatch?.total} كرت</span>
+                <span className="text-muted-foreground">إجمالي الكروت</span>
+                <span className="font-semibold text-foreground">{printBatch?.total} كرت</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-gray-500">عدد الصفحات</span>
-                <span className="font-semibold text-blue-600">
+                <span className="text-muted-foreground">عدد الصفحات</span>
+                <span className="font-semibold text-primary">
                   {printBatch ? Math.ceil(printBatch.total / cardsPerPage) : 0} صفحة
                 </span>
               </div>
@@ -1015,8 +1019,8 @@ ${pages.map(pageHtml).join('')}
                     onClick={() => setCardsPerPage(n)}
                     className={`py-2 rounded-lg border text-sm font-medium transition-colors ${
                       cardsPerPage === n
-                        ? 'bg-blue-600 text-white border-blue-600'
-                        : 'border-gray-200 text-gray-700 hover:bg-gray-50'
+                        ? 'bg-primary text-primary-foreground border-primary'
+                        : 'border-border text-foreground/80 hover:bg-muted/30'
                     }`}
                   >
                     {n}
@@ -1024,7 +1028,7 @@ ${pages.map(pageHtml).join('')}
                 ))}
               </div>
               <div className="flex items-center gap-2 mt-3">
-                <Label className="text-sm text-gray-500 shrink-0">أو أدخل رقماً:</Label>
+                <Label className="text-sm text-muted-foreground shrink-0">أو أدخل رقماً:</Label>
                 <Input
                   type="number"
                   min={1}
@@ -1070,15 +1074,23 @@ ${pages.map(pageHtml).join('')}
             <div className="flex gap-2">
               <button
                 onClick={() => setRangeAction('disable')}
-                className={`flex-1 py-2 px-3 rounded-md border text-sm font-medium transition-colors ${rangeAction === 'disable' ? 'bg-orange-50 border-orange-400 text-orange-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}
+                className={`flex-1 py-2 px-3 rounded-md border text-sm font-medium transition-colors ${
+                  rangeAction === 'disable'
+                    ? 'bg-amber-500/10 border-amber-500 text-amber-400'
+                    : 'border-border text-muted-foreground hover:bg-muted/30'
+                }`}
               >تعطيل</button>
               <button
                 onClick={() => setRangeAction('delete')}
-                className={`flex-1 py-2 px-3 rounded-md border text-sm font-medium transition-colors ${rangeAction === 'delete' ? 'bg-red-50 border-red-400 text-red-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}
+                className={`flex-1 py-2 px-3 rounded-md border text-sm font-medium transition-colors ${
+                  rangeAction === 'delete'
+                    ? 'bg-destructive/10 border-destructive text-destructive'
+                    : 'border-border text-muted-foreground hover:bg-muted/30'
+                }`}
               >حذف نهائي</button>
             </div>
             {rangeAction === 'delete' && (
-              <p className="text-xs text-red-600 bg-red-50 p-2 rounded">
+              <p className="text-xs text-destructive bg-destructive/10 border border-destructive/20 p-2 rounded">
                 سيتم حذف جميع الكروت في هذا النطاق نهائياً من قاعدة البيانات وFreeRADIUS.
               </p>
             )}

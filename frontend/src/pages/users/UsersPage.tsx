@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { Plus, Pencil, Trash2, Users, Calendar, Clock, Eye, RefreshCw, Search, ChevronDown, ChevronRight, Database } from 'lucide-react'
+import { Plus, Pencil, Trash2, Users, Calendar, Clock, Eye, EyeOff, RefreshCw, Search, ChevronDown, ChevronRight, Database } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { usersApi, plansApi, topupsApi } from '@/api/endpoints'
 import { useAuthStore } from '@/store/auth.store'
@@ -56,6 +56,15 @@ type RadUser = {
   bonusTotalBytes:       number
   bonusUsedBytes:        number
   bonusRemainingBytes:   number
+  topups:                Array<{
+    id: number
+    packageName: string | null
+    appliedAt: string
+    expiresAt: string | null
+    totalBytes: number
+    usedBytes: number
+    remainingBytes: number
+  }>
 }
 
 type Plan = { id: number; name: string }
@@ -69,12 +78,25 @@ export default function UsersPage() {
   const { user: authUser } = useAuthStore()
   const isSuperadmin = authUser?.role === 'superadmin'
   const [collapsedTenants, setCollapsedTenants] = useState<Set<number>>(new Set())
+  // Subscribers whose extra-bonus rows are expanded (default: collapsed).
+  // Only matters when a user has 2+ topups — first one always shows.
+  const [expandedBonus, setExpandedBonus] = useState<Set<string>>(new Set())
+
+  const toggleExpandBonus = (username: string) => {
+    setExpandedBonus(prev => {
+      const next = new Set(prev)
+      if (next.has(username)) next.delete(username)
+      else next.add(username)
+      return next
+    })
+  }
   const [open, setOpen]         = useState(false)
   const [editing, setEditing]   = useState<RadUser | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const [renewTarget, setRenewTarget] = useState<RadUser | null>(null)
   const [renewDays, setRenewDays] = useState(30)
   const [topupTarget, setTopupTarget] = useState<RadUser | null>(null)
+  const [clearBonusTarget, setClearBonusTarget] = useState<{ user: RadUser; topupId: number; label: string; remainingBytes: number; totalBytes: number } | null>(null)
   const [topupPackageId, setTopupPackageId] = useState<number | ''>('')
   const [formError, setFormError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
@@ -82,6 +104,7 @@ export default function UsersPage() {
   const { data: users = [], isLoading } = useQuery<RadUser[]>({
     queryKey: ['radius-users'],
     queryFn: () => usersApi.list().then(r => r.data),
+    refetchInterval: 5_000,
   })
 
   const { data: plans = [] } = useQuery<Plan[]>({
@@ -172,6 +195,15 @@ export default function UsersPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['radius-users'] })
       setTopupTarget(null); setTopupPackageId('')
+    },
+  })
+
+  const clearBonusMutation = useMutation({
+    mutationFn: ({ username, topupId }: { username: string; topupId: number }) =>
+      topupsApi.clearOneTopup(username, topupId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['radius-users'] })
+      setClearBonusTarget(null)
     },
   })
 
@@ -312,7 +344,7 @@ export default function UsersPage() {
                             </tr>
                           </thead>
                           <tbody>
-                            {group.users.map(u => <UserRow key={u.username} u={u} navigate={navigate} openEdit={openEdit} openRenew={openRenew} setDeleteTarget={setDeleteTarget} setTopupTarget={setTopupTarget} fmtBytes={fmtBytes} />)}
+                            {group.users.map(u => <UserRow key={u.username} u={u} navigate={navigate} openEdit={openEdit} openRenew={openRenew} setDeleteTarget={setDeleteTarget} setTopupTarget={setTopupTarget} setClearBonusTarget={setClearBonusTarget} expandedBonus={expandedBonus} toggleExpandBonus={toggleExpandBonus} fmtBytes={fmtBytes} />)}
                           </tbody>
                         </table>
                       </div>
@@ -336,7 +368,7 @@ export default function UsersPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredUsers.map(u => <UserRow key={u.username} u={u} navigate={navigate} openEdit={openEdit} openRenew={openRenew} setDeleteTarget={setDeleteTarget} setTopupTarget={setTopupTarget} fmtBytes={fmtBytes} />)}
+                  {filteredUsers.map(u => <UserRow key={u.username} u={u} navigate={navigate} openEdit={openEdit} openRenew={openRenew} setDeleteTarget={setDeleteTarget} setTopupTarget={setTopupTarget} setClearBonusTarget={setClearBonusTarget} expandedBonus={expandedBonus} toggleExpandBonus={toggleExpandBonus} fmtBytes={fmtBytes} />)}
                 </tbody>
               </table>
             </div>
@@ -572,6 +604,35 @@ export default function UsersPage() {
         </DialogContent>
       </Dialog>
 
+      {/* Clear one topup Dialog */}
+      <Dialog open={!!clearBonusTarget} onOpenChange={() => setClearBonusTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Trash2 className="h-5 w-5 text-destructive" /> مسح باقة إضافية
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm">
+            سيتم حذف الباقة <strong>{clearBonusTarget?.label}</strong> من المشترك <strong dir="ltr">{clearBonusTarget?.user.username}</strong>.
+          </p>
+          {clearBonusTarget && (
+            <p className="text-xs text-muted-foreground">
+              قيمة الباقة حالياً: <strong>{fmtBytes(clearBonusTarget.remainingBytes)}</strong> من {fmtBytes(clearBonusTarget.totalBytes)}
+            </p>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setClearBonusTarget(null)}>إلغاء</Button>
+            <Button
+              variant="destructive"
+              onClick={() => clearBonusTarget && clearBonusMutation.mutate({ username: clearBonusTarget.user.username, topupId: clearBonusTarget.topupId })}
+              disabled={clearBonusMutation.isPending}
+            >
+              {clearBonusMutation.isPending ? 'جاري المسح...' : 'مسح'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Delete Dialog */}
       <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <DialogContent>
@@ -595,18 +656,38 @@ export default function UsersPage() {
   )
 }
 
-function UserRow({ u, navigate, openEdit, openRenew, setDeleteTarget, setTopupTarget, fmtBytes }: {
+function UserRow({ u, navigate, openEdit, openRenew, setDeleteTarget, setTopupTarget, setClearBonusTarget, expandedBonus, toggleExpandBonus, fmtBytes }: {
   u: RadUser
   navigate: (path: string) => void
   openEdit: (u: RadUser) => void
   openRenew: (u: RadUser) => void
   setTopupTarget: (u: RadUser) => void
+  setClearBonusTarget: (t: { user: RadUser; topupId: number; label: string; remainingBytes: number; totalBytes: number }) => void
   setDeleteTarget: (username: string) => void
+  expandedBonus: Set<string>
+  toggleExpandBonus: (username: string) => void
   fmtBytes: (b: number) => string
 }) {
+  const hasMultipleTopups = (u.topups?.length ?? 0) > 1
+  const isExpanded = expandedBonus.has(u.username)
+  const handleRowClick = (e: React.MouseEvent) => {
+    // Don't toggle when clicking on buttons or interactive elements
+    const target = e.target as HTMLElement
+    if (target.closest('button, a, input')) return
+    if (hasMultipleTopups) toggleExpandBonus(u.username)
+  }
   return (
-    <tr className="border-b hover:bg-muted/30">
-      <td className="py-2 px-3 font-medium font-mono text-xs" dir="ltr">{u.username}</td>
+    <tr
+      className={`border-b hover:bg-muted/30 ${hasMultipleTopups ? 'cursor-pointer' : ''}`}
+      onClick={handleRowClick}
+      title={hasMultipleTopups ? (isExpanded ? 'اضغط لطي الباقات الإضافية' : 'اضغط لعرض كل الباقات الإضافية') : undefined}
+    >
+      <td className="py-2 px-3 font-medium font-mono text-xs" dir="ltr">
+        <span className="inline-flex items-center gap-1.5">
+          {hasMultipleTopups && (isExpanded ? <ChevronDown className="h-3 w-3 text-muted-foreground" /> : <ChevronRight className="h-3 w-3 text-muted-foreground" />)}
+          {u.username}
+        </span>
+      </td>
       <td className="py-2 px-3 text-sm">{u.firstName}</td>
       <td className="py-2 px-3">
         {u.plan ? <Badge variant="outline">{u.plan.name}</Badge> : <span className="text-muted-foreground text-xs">—</span>}
@@ -618,33 +699,79 @@ function UserRow({ u, navigate, openEdit, openRenew, setDeleteTarget, setTopupTa
         {u.remainingDays <= 0 && <span className="block text-xs text-destructive">منتهي</span>}
       </td>
       <td className="py-2 px-3">
-        <div className="min-w-[110px] space-y-1">
-          {u.remainingDownloadBytes !== null ? (
+        <div className="min-w-[140px] space-y-1">
+          {u.remainingDownloadBytes !== null && u.downloadLimitBytes ? (
             <div>
-              <span className="text-sm font-medium">{fmtBytes(u.remainingDownloadBytes)}</span>
-              <div className="w-full bg-muted rounded-full h-1.5 mt-0.5">
-                <div
-                  className="h-1.5 rounded-full bg-blue-500"
-                  style={{ width: `${u.downloadLimitBytes ? Math.min(100, (u.remainingDownloadBytes / u.downloadLimitBytes) * 100) : 0}%` }}
-                />
-              </div>
+              {(() => {
+                const remainingPct = Math.min(100, (u.remainingDownloadBytes / u.downloadLimitBytes) * 100)
+                const isExhausted = u.remainingDownloadBytes === 0
+                return <>
+                  <div className="flex items-baseline gap-1.5">
+                    <span className={`text-sm font-bold ${isExhausted ? 'text-destructive' : 'text-primary'}`}>
+                      {fmtBytes(u.remainingDownloadBytes)}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground">/ {fmtBytes(u.downloadLimitBytes)}</span>
+                  </div>
+                  <div className="w-full bg-muted rounded-full h-1.5 mt-0.5">
+                    <div
+                      className={`h-1.5 rounded-full transition-all ${isExhausted ? 'bg-destructive' : remainingPct < 20 ? 'bg-yellow-500' : 'bg-blue-500'}`}
+                      style={{ width: `${remainingPct}%` }}
+                    />
+                  </div>
+                </>
+              })()}
             </div>
           ) : (
             <span className="text-xs text-muted-foreground">غير محدود</span>
           )}
-          {u.bonusTotalBytes > 0 && (
-            <div title={`باقات إضافية: ${fmtBytes(u.bonusRemainingBytes)} من ${fmtBytes(u.bonusTotalBytes)}`}>
-              <span className="text-xs font-medium text-purple-600 flex items-center gap-1">
-                <span>+{fmtBytes(u.bonusRemainingBytes)}</span>
-              </span>
-              <div className="w-full bg-muted rounded-full h-1.5 mt-0.5">
-                <div
-                  className="h-1.5 rounded-full bg-purple-500"
-                  style={{ width: `${Math.min(100, (u.bonusRemainingBytes / u.bonusTotalBytes) * 100)}%` }}
-                />
-              </div>
-            </div>
-          )}
+          {(() => {
+            const topups = u.topups ?? []
+            if (topups.length === 0) return null
+            const visible = isExpanded || topups.length === 1 ? topups : topups.slice(0, 1)
+            const hiddenCount = topups.length - visible.length
+            return <>
+              {visible.map((t, i) => {
+                const pct = t.totalBytes > 0 ? Math.min(100, (t.remainingBytes / t.totalBytes) * 100) : 0
+                const exhausted = t.remainingBytes === 0
+                const daysLeft = t.expiresAt ? Math.max(0, Math.ceil((new Date(t.expiresAt).getTime() - Date.now()) / 86400000)) : null
+                const expiringSoon = daysLeft !== null && daysLeft <= 3
+                return (
+                  <div key={t.id} title={`${t.packageName ?? 'باقة #' + (i + 1)}: ${fmtBytes(t.remainingBytes)} من ${fmtBytes(t.totalBytes)}${daysLeft !== null ? ` — تنتهي خلال ${daysLeft} يوم` : ''}`}>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`text-xs font-bold ${exhausted ? 'text-destructive' : 'text-purple-600'}`}>
+                        +{fmtBytes(t.remainingBytes)}
+                      </span>
+                      <span className="text-[10px] text-muted-foreground">/ {fmtBytes(t.totalBytes)}</span>
+                      {daysLeft !== null && (
+                        <span className={`text-[10px] ${expiringSoon ? 'text-destructive font-medium' : 'text-muted-foreground'}`}>
+                          ⏱{daysLeft}ي
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        title={`مسح ${t.packageName ?? 'الباقة'}`}
+                        onClick={(e) => { e.stopPropagation(); setClearBonusTarget({ user: u, topupId: t.id, label: t.packageName ?? `باقة #${i + 1}`, remainingBytes: t.remainingBytes, totalBytes: t.totalBytes }) }}
+                        className="mr-auto text-muted-foreground hover:text-destructive transition-colors"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </div>
+                    <div className="w-full bg-muted rounded-full h-1.5 mt-0.5">
+                      <div
+                        className={`h-1.5 rounded-full transition-all ${exhausted ? 'bg-destructive' : pct < 20 ? 'bg-yellow-500' : 'bg-purple-500'}`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  </div>
+                )
+              })}
+              {hiddenCount > 0 && (
+                <div className="text-[10px] text-muted-foreground flex items-center gap-1 pt-0.5">
+                  <ChevronDown className="h-3 w-3" /> +{hiddenCount} باقة أخرى (اضغط الصف للعرض)
+                </div>
+              )}
+            </>
+          })()}
         </div>
       </td>
       <td className="py-2 px-3 text-left whitespace-nowrap">

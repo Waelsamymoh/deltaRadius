@@ -8,9 +8,13 @@ import { Plan } from '../../database/entities/plan.entity';
 import { Nas } from '../../database/entities/nas.entity';
 import { RadiusUsersController } from './radius-users.controller';
 import { RadiusUsersService } from './radius-users.service';
+import { QuotaModule } from '../quota/quota.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([RadCheck, RadReply, RadUserGroup, UserProfile, Plan, Nas])],
+  imports: [
+    TypeOrmModule.forFeature([RadCheck, RadReply, RadUserGroup, UserProfile, Plan, Nas]),
+    QuotaModule,
+  ],
   controllers: [RadiusUsersController],
   providers: [RadiusUsersService],
 })

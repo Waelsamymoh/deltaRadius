@@ -1,4 +1,4 @@
-import { Injectable, NestMiddleware, UnauthorizedException } from '@nestjs/common';
+import { Injectable, NestMiddleware } from '@nestjs/common';
 import { Request, Response, NextFunction } from 'express';
 import { DataSource } from 'typeorm';
 
@@ -22,7 +22,8 @@ export class TenantSubdomainMiddleware implements NestMiddleware {
     );
 
     if (!rows.length) {
-      throw new UnauthorizedException(`Subdomain '${subdomain}' not found`);
+      _res.status(404).json({ code: 'TENANT_NOT_FOUND', subdomain });
+      return;
     }
 
     req.resolvedTenantId = rows[0].id as number;
@@ -33,7 +34,7 @@ export class TenantSubdomainMiddleware implements NestMiddleware {
     const parts = host.split('.');
     if (parts.length < 3) return null;
     const sub = parts[0];
-    if (sub === 'www' || sub === 'owner') return null;
+    if (sub === 'www' || sub === 'owner' || sub === 'admin') return null;
     return sub;
   }
 }

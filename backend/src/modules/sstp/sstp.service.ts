@@ -1,33 +1,144 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, IsNull } from 'typeorm';
-import { AdminUser } from '../../database/entities/admin-user.entity';
+import { Not, IsNull, Repository } from 'typeorm';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
+import { Tenant } from '../../database/entities/tenant.entity';
 
 const execAsync = promisify(exec);
 const CMD = (cmd: string) => `/usr/local/bin/accel-cmd -p 2000 ${cmd}`;
+const CHAP_SECRETS = '/etc/ppp/chap-secrets';
+
+export interface SstpUser {
+  username: string;
+  server: string;
+  ip: string;
+  source: 'tenant' | 'standalone';
+  tenantId?: number;
+  tenantName?: string;
+}
 
 @Injectable()
 export class SstpService {
   constructor(
-    @InjectRepository(AdminUser)
-    private readonly adminRepo: Repository<AdminUser>,
+    @InjectRepository(Tenant)
+    private readonly tenantRepo: Repository<Tenant>,
   ) {}
 
-  // ── SSTP Accounts (read-only — credentials managed via AdminUsersService) ──
+  // ── chap-secrets CRUD ──────────────────────────────────────────────────────
 
-  async listSstpAccounts() {
-    const users = await this.adminRepo.find({
-      where: { archivedAt: IsNull() },
+  private readChap(): string {
+    try { return fs.readFileSync(CHAP_SECRETS, 'utf8'); }
+    catch { return ''; }
+  }
+
+  private writeChap(content: string): void {
+    fs.writeFileSync(CHAP_SECRETS, content, { mode: 0o640 });
+    // tell accel-ppp to reload the file so static IPs apply to new connections
+    execAsync('/usr/local/bin/accel-cmd -p 2000 reload', { timeout: 3000 }).catch(() => {});
+  }
+
+  private parseChap(content: string): Array<{ username: string; server: string; password: string; ip: string }> {
+    return content
+      .split('\n')
+      .map(l => l.trim())
+      .filter(l => l && !l.startsWith('#'))
+      .map(l => {
+        const parts = l.split(/\s+/);
+        return {
+          username: parts[0] ?? '',
+          server:   parts[1] ?? '*',
+          password: parts[2] ?? '',
+          ip:       parts[3] ?? '*',
+        };
+      })
+      .filter(u => u.username);
+  }
+
+  private serializeChap(users: Array<{ username: string; server: string; password: string; ip: string }>): string {
+    const header = '# SSTP / PPP chap-secrets — managed by DeltaRadius\n';
+    const rows = users.map(u => `${u.username}\t${u.server}\t${u.password}\t${u.ip}`).join('\n');
+    return header + rows + (rows ? '\n' : '');
+  }
+
+  async listUsers(): Promise<SstpUser[]> {
+    // 1. Get all tenants that have SSTP credentials
+    const tenants = await this.tenantRepo.find({
+      where: { sstpUsername: Not(IsNull()), sstpPassword: Not(IsNull()) },
     });
-    return users.map(u => ({
-      adminId: u.id,
-      adminName: u.fullName || u.email,
-      sstpUsername: u.sstpUsername ?? null,
-      hasPassword: !!u.sstpPassword,
-    }));
+
+    // 2. Read current chap-secrets
+    let chap = this.parseChap(this.readChap());
+
+    // 3. Auto-sync: ensure every tenant with SSTP credentials exists in chap-secrets
+    let dirty = false;
+    for (const t of tenants) {
+      if (!t.sstpUsername || !t.sstpPassword) continue;
+      const existing = chap.find(u => u.username === t.sstpUsername);
+      if (!existing) {
+        chap.push({ username: t.sstpUsername, server: '*', password: t.sstpPassword, ip: '*' });
+        dirty = true;
+      } else if (existing.password !== t.sstpPassword) {
+        existing.password = t.sstpPassword;
+        dirty = true;
+      }
+    }
+    if (dirty) this.writeChap(this.serializeChap(chap));
+
+    // 4. Build response — label entries that match a tenant
+    const tenantByUsername = new Map(
+      tenants.filter(t => t.sstpUsername).map(t => [t.sstpUsername!, t]),
+    );
+
+    return chap.map(({ username, server, ip }) => {
+      const t = tenantByUsername.get(username);
+      if (t) {
+        return {
+          username, server, ip,
+          source: 'tenant' as const,
+          tenantId: t.id,
+          tenantName: t.businessName || t.name,
+        };
+      }
+      return { username, server, ip, source: 'standalone' as const };
+    });
+  }
+
+  createUser(username: string, password: string, ip = '*') {
+    if (!username || !password) throw new BadRequestException('اسم المستخدم وكلمة المرور مطلوبان');
+    username = username.trim();
+    if (/\s/.test(username)) throw new BadRequestException('اسم المستخدم لا يجب أن يحتوي على مسافات');
+
+    const content = this.readChap();
+    const users = this.parseChap(content);
+    if (users.find(u => u.username === username))
+      throw new BadRequestException('اسم المستخدم موجود بالفعل');
+
+    users.push({ username, server: '*', password, ip });
+    this.writeChap(this.serializeChap(users));
+    return { message: `تم إضافة المستخدم ${username}` };
+  }
+
+  updateUser(username: string, newPassword: string) {
+    if (!newPassword) throw new BadRequestException('كلمة المرور مطلوبة');
+    const content = this.readChap();
+    const users = this.parseChap(content);
+    const user = users.find(u => u.username === username);
+    if (!user) throw new NotFoundException('المستخدم غير موجود');
+    user.password = newPassword;
+    this.writeChap(this.serializeChap(users));
+    return { message: `تم تحديث كلمة مرور ${username}` };
+  }
+
+  deleteUser(username: string) {
+    const content = this.readChap();
+    const users = this.parseChap(content);
+    const idx = users.findIndex(u => u.username === username);
+    if (idx === -1) throw new NotFoundException('المستخدم غير موجود');
+    users.splice(idx, 1);
+    this.writeChap(this.serializeChap(users));
+    return { message: `تم حذف المستخدم ${username}` };
   }
 
   private async run(cmd: string): Promise<string> {
@@ -93,22 +204,32 @@ export class SstpService {
   async getConfig() {
     try {
       const content = fs.readFileSync('/etc/accel-ppp/accel-ppp.conf', 'utf8');
-      const ipPool = this.extractSection(content, 'ip-pool');
-      const dns    = this.extractSection(content, 'dns');
-      const listen = content.match(/listen\s*=\s*(.+)/)?.[1]?.trim() ?? '';
-      return { ipPool, dns, listen, raw: content };
+      const ipPoolSection = this.extractSection(content, 'ip-pool');
+      const dns = this.extractSection(content, 'dns');
+      const lines = ipPoolSection.split('\n').filter(l => l.trim());
+      const gwLine = lines.find(l => l.startsWith('gw-ip-address='));
+      const poolLines = lines.filter(l => !l.startsWith('gw-ip-address='));
+      return {
+        ipPool: ipPoolSection,
+        gwIp:   gwLine?.split('=')?.[1]?.trim() ?? '10.100.0.1',
+        pool:   poolLines.join('\n'),
+        dns,
+        bind:   content.match(/bind\s*=\s*(.+)/)?.[1]?.trim() ?? '',
+        port:   content.match(/^port\s*=\s*(.+)/m)?.[1]?.trim() ?? '4430',
+      };
     } catch {
-      return { ipPool: '', dns: '', listen: '', raw: '' };
+      return { ipPool: '', gwIp: '10.100.0.1', pool: '', dns: '', bind: '', port: '4430' };
     }
   }
 
-  async updateConfig(data: { ipPool?: string; dns1?: string; dns2?: string }) {
+  async updateConfig(data: { ipPool?: string; dns1?: string; dns2?: string; gwIp?: string }) {
     let content = fs.readFileSync('/etc/accel-ppp/accel-ppp.conf', 'utf8');
 
     if (data.ipPool) {
+      const gw = data.gwIp ?? '10.100.0.1';
       content = content.replace(
         /\[ip-pool\][^\[]+/s,
-        `[ip-pool]\ngw-ip-address=10.99.0.1\n${data.ipPool}\n\n`,
+        `[ip-pool]\ngw-ip-address=${gw}\n${data.ipPool}\n\n`,
       );
     }
     if (data.dns1 || data.dns2) {
@@ -121,8 +242,9 @@ export class SstpService {
     }
 
     fs.writeFileSync('/etc/accel-ppp/accel-ppp.conf', content);
-    await execAsync('/usr/local/bin/accel-cmd -p 2000 reload', { timeout: 5000 }).catch(() => {});
-    return { message: 'تم حفظ الإعدادات وإعادة التحميل' };
+    // ip-pool is loaded only at startup — requires full restart (not just reload)
+    await execAsync('systemctl restart accel-ppp', { timeout: 15000 }).catch(() => {});
+    return { message: 'تم حفظ الإعدادات وإعادة تشغيل السيرفر' };
   }
 
   async getStatus() {

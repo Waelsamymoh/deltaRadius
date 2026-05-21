@@ -78,10 +78,12 @@ const fmtDate = (d: string | null) =>
 
 function UsageBar({ used, total, color }: { used: number; total: number; color: string }) {
   const pct = total > 0 ? Math.min(100, (used / total) * 100) : 0
+  // Show warning/danger colors when nearing/at limit (overrides base color)
+  const visualColor = pct >= 100 ? 'bg-destructive' : pct >= 80 ? 'bg-yellow-500' : color
   return (
     <div className="w-full bg-muted rounded-full h-2">
       <div
-        className={`h-2 rounded-full transition-all ${color}`}
+        className={`h-2 rounded-full transition-all ${visualColor}`}
         style={{ width: `${pct}%` }}
       />
     </div>
@@ -107,7 +109,7 @@ export default function UserDetailPage() {
   const { data: stats, isLoading, error } = useQuery<Stats>({
     queryKey: ['user-stats', username],
     queryFn: () => usersApi.stats(username!).then(r => r.data),
-    refetchInterval: 30_000,
+    refetchInterval: 5_000,
   })
 
   if (isLoading) return (
@@ -192,12 +194,18 @@ export default function UserDetailPage() {
                 </p>
                 {(stats.usage.isTotalQuota ? stats.usage.remainingBytes : stats.usage.remainingDownloadBytes) !== null ? (
                   <>
-                    <p className="text-3xl font-bold text-primary">
-                      {fmtBytes(stats.usage.isTotalQuota ? stats.usage.remainingBytes! : stats.usage.remainingDownloadBytes!)}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      من {fmtBytes(stats.usage.isTotalQuota ? stats.usage.totalLimitBytes! : stats.usage.downloadLimitBytes!)}
-                    </p>
+                    {(() => {
+                      const remaining = stats.usage.isTotalQuota ? stats.usage.remainingBytes! : stats.usage.remainingDownloadBytes!
+                      const total = stats.usage.isTotalQuota ? stats.usage.totalLimitBytes! : stats.usage.downloadLimitBytes!
+                      const exhausted = remaining === 0
+                      const warning = remaining > 0 && remaining / total < 0.2
+                      return <>
+                        <p className={`text-3xl font-bold ${exhausted ? 'text-destructive' : warning ? 'text-yellow-600' : 'text-primary'}`}>
+                          {fmtBytes(remaining)}
+                        </p>
+                        <p className="text-xs text-muted-foreground">من {fmtBytes(total)}</p>
+                      </>
+                    })()}
                   </>
                 ) : (
                   <p className="text-xl font-bold text-muted-foreground">غير محدود</p>
@@ -257,7 +265,7 @@ export default function UserDetailPage() {
                 <p className="text-xs text-muted-foreground">الباقات الإضافية المتبقية</p>
                 {stats.bonus.totalBytes > 0 ? (
                   <>
-                    <p className="text-3xl font-bold text-purple-600">
+                    <p className={`text-3xl font-bold ${stats.bonus.remainingBytes === 0 ? 'text-destructive' : 'text-purple-600'}`}>
                       {fmtBytes(stats.bonus.remainingBytes)}
                     </p>
                     <p className="text-xs text-muted-foreground">
@@ -338,16 +346,46 @@ export default function UserDetailPage() {
           </Card>
         )}
 
-        {/* Total usage */}
+        {/* Remaining quota breakdown */}
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm flex items-center gap-2">
-              <Activity className="h-4 w-4" /> إجمالي الاستهلاك
+              <Activity className="h-4 w-4" /> المتبقي من الكوته
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
-            <Row icon={<Download className="h-4 w-4" />} label="إجمالي التحميل" value={fmtBytes(stats.usage.totalDownloadBytes)} />
-            <Row icon={<Upload className="h-4 w-4" />}   label="إجمالي الرفع"   value={fmtBytes(stats.usage.totalUploadBytes)} />
+            <Row
+              icon={<Download className="h-4 w-4" />}
+              label="متبقي للتحميل"
+              value={
+                stats.usage.isTotalQuota && stats.usage.remainingBytes !== null
+                  ? `${fmtBytes(stats.usage.remainingBytes)} (إجمالي مشترك)`
+                  : stats.usage.remainingDownloadBytes !== null
+                    ? fmtBytes(stats.usage.remainingDownloadBytes)
+                    : 'غير محدود'
+              }
+            />
+            <Row
+              icon={<Upload className="h-4 w-4" />}
+              label="متبقي للرفع"
+              value={
+                stats.usage.isTotalQuota && stats.usage.remainingBytes !== null
+                  ? `${fmtBytes(stats.usage.remainingBytes)} (إجمالي مشترك)`
+                  : stats.usage.remainingUploadBytes !== null
+                    ? fmtBytes(stats.usage.remainingUploadBytes)
+                    : 'غير محدود'
+              }
+            />
+            <Row
+              icon={<Download className="h-4 w-4 opacity-50" />}
+              label="استُهلك تحميل"
+              value={fmtBytes(stats.usage.totalDownloadBytes)}
+            />
+            <Row
+              icon={<Upload className="h-4 w-4 opacity-50" />}
+              label="استُهلك رفع"
+              value={fmtBytes(stats.usage.totalUploadBytes)}
+            />
           </CardContent>
         </Card>
       </div>

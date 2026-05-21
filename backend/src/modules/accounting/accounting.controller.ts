@@ -1,4 +1,4 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Delete, Post, Query, Param, UseGuards } from '@nestjs/common';
 import { AccountingService } from './accounting.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -23,6 +23,19 @@ export class AccountingController {
     return this.accountingService.findAuthLogs(user);
   }
 
+  @Get('auth-logs/months')
+  authLogMonths(@CurrentUser() user: AdminUser) {
+    return this.accountingService.authLogMonths(user);
+  }
+
+  @Delete('auth-logs/months/:month')
+  deleteAuthLogsByMonth(
+    @CurrentUser() user: AdminUser,
+    @Param('month') month: string,
+  ) {
+    return this.accountingService.deleteAuthLogsByMonth(user, month);
+  }
+
   @Get('stats')
   stats(@CurrentUser() user: AdminUser) {
     return this.accountingService.stats(user);
@@ -31,5 +44,10 @@ export class AccountingController {
   @Get('dashboard')
   dashboard(@CurrentUser() user: AdminUser) {
     return this.accountingService.dashboardStats(user);
+  }
+
+  @Post('sessions/cleanup-stale')
+  cleanupStale(@CurrentUser() user: AdminUser) {
+    return this.accountingService.cleanupStaleSessions(user);
   }
 }

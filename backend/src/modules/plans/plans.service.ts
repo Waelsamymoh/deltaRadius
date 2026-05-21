@@ -53,9 +53,26 @@ export class PlansService {
     Object.assign(plan, dto);
     const saved = await this.planRepo.save(plan);
     await this.syncGroupReply(saved, tenantId);
+    // Stale user-specific radreply (Rate-Limit/Framed-Pool) would override the
+    // updated group-level attrs — purge them so users get the new plan values.
+    await this.purgeStaleUserOverrides(saved.id, tenantId);
     // Push CoA to all active users on this plan (fire-and-forget)
     this.pushCoaToActivePlanUsers(saved, tenantId).catch(e => this.logger.error(e));
     return saved;
+  }
+
+  private async purgeStaleUserOverrides(planId: number, tenantId: number | null): Promise<void> {
+    const tenantClause = tenantId ? `AND up.tenant_id = ${tenantId}` : '';
+    // Drop user-specific overrides for attributes that come from the group plan.
+    // We keep quota attrs (Mikrotik-Recv/Xmit-Limit) because they may include
+    // per-user bonus from top-ups.
+    await this.dataSource.query(`
+      DELETE FROM radreply
+      WHERE attribute IN ('Mikrotik-Rate-Limit','Framed-Pool','Session-Timeout')
+        AND username IN (
+          SELECT username FROM user_profiles up WHERE up.plan_id = $1 ${tenantClause}
+        )
+    `, [planId]);
   }
 
   private async pushCoaToActivePlanUsers(plan: Plan, tenantId: number | null): Promise<void> {

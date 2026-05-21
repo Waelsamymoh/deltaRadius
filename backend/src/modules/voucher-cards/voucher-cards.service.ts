@@ -69,12 +69,15 @@ export class VoucherCardsService {
         const saved = await m.save(VoucherCard, card);
         cards.push(saved);
 
-        // Insert into FreeRADIUS
+        // Insert into FreeRADIUS:
+        //   authMode='both'           → Cleartext-Password = code  (user types it)
+        //   authMode='username_only'  → Auth-Type=Accept           (no password)
+        // FreeRADIUS needs the `Auth-Type Accept { ok }` handler we added in
+        // sites-enabled/default for the second case to actually accept.
         const checkAttrs: any[] = [];
         if (dto.authMode === 'both') {
           checkAttrs.push({ username: code, attribute: 'Cleartext-Password', op: ':=', value: code, tenantId });
         } else {
-          // username_only: tell FreeRADIUS to accept without password check
           checkAttrs.push({ username: code, attribute: 'Auth-Type', op: ':=', value: 'Accept', tenantId });
         }
         if (expiresAt) {
@@ -184,9 +187,9 @@ export class VoucherCardsService {
 
     if (dto.authMode !== undefined && dto.authMode !== card.authMode) {
       card.authMode = dto.authMode;
-      // Switch password mode in radcheck
-      const wPwd: any = tenantId ? { username: card.code, attribute: 'Cleartext-Password', tenantId } : { username: card.code, attribute: 'Cleartext-Password' };
-      const wAuth: any = tenantId ? { username: card.code, attribute: 'Auth-Type', tenantId } : { username: card.code, attribute: 'Auth-Type' };
+      // Swap between Cleartext-Password (mode=both) and Auth-Type=Accept (username_only).
+      const wPwd:  any = tenantId ? { username: card.code, attribute: 'Cleartext-Password', tenantId } : { username: card.code, attribute: 'Cleartext-Password' };
+      const wAuth: any = tenantId ? { username: card.code, attribute: 'Auth-Type',          tenantId } : { username: card.code, attribute: 'Auth-Type' };
       await this.radCheckRepo.delete(wPwd);
       await this.radCheckRepo.delete(wAuth);
       if (dto.authMode === 'both') {

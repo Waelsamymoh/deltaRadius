@@ -1,10 +1,12 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { Activity, Wifi, ShieldCheck } from 'lucide-react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Activity, Wifi, ShieldCheck, Trash2, Calendar, Eraser, Loader2 } from 'lucide-react'
 import { accountingApi } from '@/api/endpoints'
+import { useAuthStore } from '@/store/auth.store'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 
 type Session = {
   id: number
@@ -43,6 +45,10 @@ function formatDuration(sec: number | null): string {
 
 export default function AccountingPage() {
   const [tab, setTab] = useState<'sessions' | 'auth'>('sessions')
+  const [deleteMonth, setDeleteMonth] = useState<{ month: string; count: number } | null>(null)
+  const qc = useQueryClient()
+  const { user } = useAuthStore()
+  const isOwner = user?.role === 'owner'
 
   const { data: activeSessions = [], isLoading: loadingActive } = useQuery<Session[]>({
     queryKey: ['sessions-active'],
@@ -55,6 +61,32 @@ export default function AccountingPage() {
     queryFn: () => accountingApi.authLogs().then(r => r.data),
     enabled: tab === 'auth',
   })
+
+  const { data: authMonths = [] } = useQuery<{ month: string; count: number }[]>({
+    queryKey: ['auth-log-months'],
+    queryFn: () => accountingApi.authLogMonths().then(r => r.data),
+    enabled: tab === 'auth' && isOwner,
+  })
+
+  const deleteMonthMutation = useMutation({
+    mutationFn: (month: string) => accountingApi.deleteAuthLogsByMonth(month),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['auth-logs'] })
+      qc.invalidateQueries({ queryKey: ['auth-log-months'] })
+      setDeleteMonth(null)
+    },
+  })
+
+  const cleanupMutation = useMutation({
+    mutationFn: () => accountingApi.cleanupStaleSessions(),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['sessions-active'] }),
+  })
+
+  const monthLabel = (m: string) => {
+    const [y, mo] = m.split('-').map(Number)
+    const names = ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر']
+    return `${names[mo - 1]} ${y}`
+  }
 
   return (
     <div className="p-8">
@@ -94,11 +126,35 @@ export default function AccountingPage() {
       {tab === 'sessions' && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <Wifi className="h-4 w-4" />
-              الجلسات النشطة حالياً
-              <Badge variant="success" className="ml-1">{activeSessions.length} متصل</Badge>
-            </CardTitle>
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Wifi className="h-4 w-4" />
+                الجلسات النشطة حالياً
+                <Badge variant="success" className="ml-1">{activeSessions.length} متصل</Badge>
+              </CardTitle>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                onClick={() => cleanupMutation.mutate()}
+                disabled={cleanupMutation.isPending}
+                title="إغلاق الجلسات المعلّقة (لم يصل لها interim update من 10 دقائق)"
+              >
+                {cleanupMutation.isPending
+                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  : <Eraser className="h-3.5 w-3.5" />}
+                تنظيف الجلسات المعلّقة
+                {cleanupMutation.data?.data?.closed > 0 && (
+                  <Badge variant="secondary" className="ml-1">
+                    {cleanupMutation.data.data.closed}
+                  </Badge>
+                )}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              الجلسة تُعتبر نشطة فقط إذا وصل منها interim-update خلال آخر 10 دقائق —
+              تُستثنى الجلسات المعلّقة (انقطع NAS بدون إرسال Stop)
+            </p>
           </CardHeader>
           <CardContent>
             {loadingActive ? (
@@ -145,10 +201,32 @@ export default function AccountingPage() {
       {tab === 'auth' && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <ShieldCheck className="h-4 w-4" />
-              سجلات المصادقة
-            </CardTitle>
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <CardTitle className="text-base flex items-center gap-2">
+                <ShieldCheck className="h-4 w-4" />
+                سجلات المصادقة
+              </CardTitle>
+              {isOwner && authMonths.length > 0 && (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Calendar className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-xs text-muted-foreground">مسح سجلات شهر:</span>
+                  {authMonths.map(m => (
+                    <Button
+                      key={m.month}
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs gap-1.5 text-destructive hover:bg-red-50 dark:hover:bg-red-950 border-destructive/30"
+                      onClick={() => setDeleteMonth(m)}
+                      title={`حذف ${m.count} سجل`}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                      {monthLabel(m.month)}
+                      <span className="text-muted-foreground">({m.count})</span>
+                    </Button>
+                  ))}
+                </div>
+              )}
+            </div>
           </CardHeader>
           <CardContent>
             {loadingAuth ? (
@@ -188,6 +266,32 @@ export default function AccountingPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Confirm delete month */}
+      <Dialog open={!!deleteMonth} onOpenChange={() => setDeleteMonth(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <Trash2 className="h-5 w-5" />
+              مسح سجلات شهر {deleteMonth && monthLabel(deleteMonth.month)}
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm">
+            سيتم حذف <strong>{deleteMonth?.count}</strong> سجل مصادقة نهائياً.
+            لا يمكن التراجع عن هذا الإجراء.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteMonth(null)}>إلغاء</Button>
+            <Button
+              variant="destructive"
+              onClick={() => deleteMonth && deleteMonthMutation.mutate(deleteMonth.month)}
+              disabled={deleteMonthMutation.isPending}
+            >
+              {deleteMonthMutation.isPending ? 'جاري الحذف...' : 'حذف نهائي'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

@@ -7,15 +7,42 @@ export const authApi = {
   register: (data: unknown) => api.post('/auth/register', data),
   setupStatus: () => api.get('/auth/setup-status'),
   setupFirstAdmin: (data: unknown) => api.post('/auth/setup', data),
+  selfRegister: (data: unknown) => api.post('/auth/self-register', data),
+  loginFromLanding: (email: string, password: string) =>
+    api.post('/auth/login-from-landing', { email, password }),
+}
+
+// ── Server Health (owner-side) ────────────────────────────────
+export const serverHealthApi = {
+  get: () => api.get('/server-health'),
+}
+
+// ── Owner Assistants ──────────────────────────────────────────
+export const ownerAssistantsApi = {
+  list: () => api.get('/owner-assistants'),
+  permissions: () => api.get('/owner-assistants/permissions'),
+  create: (data: unknown) => api.post('/owner-assistants', data),
+  update: (id: number, data: unknown) => api.patch(`/owner-assistants/${id}`, data),
+  remove: (id: number) => api.delete(`/owner-assistants/${id}`),
 }
 
 // ── Tenants ───────────────────────────────────────────────────
 export const tenantsApi = {
-  list: () => api.get('/tenants'),
+  list: (includeArchived = false) =>
+    api.get('/tenants', { params: includeArchived ? { includeArchived: 'true' } : {} }),
+  get: (id: number) => api.get(`/tenants/${id}`),
+  summary: (id: number) => api.get(`/tenants/${id}/summary`),
   create: (data: unknown) => api.post('/tenants', data),
   update: (id: number, data: unknown) => api.patch(`/tenants/${id}`, data),
   resetAdminPassword: (id: number, password: string) => api.patch(`/tenants/${id}/admin-password`, { password }),
-  remove: (id: number) => api.delete(`/tenants/${id}`),
+  regenerateSstp: (id: number) => api.post(`/tenants/${id}/regenerate-sstp`),
+  /** Soft-delete = archive (kicks active SSTP sessions, keeps the data). */
+  archive: (id: number) => api.delete(`/tenants/${id}`),
+  restore: (id: number) => api.post(`/tenants/${id}/restore`),
+  /** Permanent delete — only after archive. Irreversible. */
+  removePermanent: (id: number) => api.delete(`/tenants/${id}/permanent`),
+  downloadMikrotikScript: (id: number) =>
+    api.get(`/tenants/${id}/mikrotik-script`, { responseType: 'blob' }),
 }
 
 // ── RADIUS Users ──────────────────────────────────────────────
@@ -36,6 +63,9 @@ export const nasApi = {
   update: (id: number, data: unknown) => api.patch(`/nas/${id}`, data),
   remove: (id: number) => api.delete(`/nas/${id}`),
   check: (id: number) => api.get(`/nas/${id}/check`),
+  downloadMikrotikScript: (id: number) =>
+    api.get(`/nas/${id}/mikrotik-script`, { responseType: 'blob' }),
+  fetchCommand: (id: number) => api.get(`/nas/${id}/fetch-command`),
 }
 
 // ── Groups ────────────────────────────────────────────────────
@@ -64,6 +94,8 @@ export const topupsApi = {
   applyToUser: (username: string, packageId: number) =>
     api.post(`/radius-users/${username}/topup`, { packageId }),
   userTopups: (username: string) => api.get(`/radius-users/${username}/topups`),
+  clearBonus: (username: string) => api.delete(`/radius-users/${username}/bonus`),
+  clearOneTopup: (username: string, topupId: number) => api.delete(`/radius-users/${username}/topups/${topupId}`),
 }
 
 // ── Voucher Cards ─────────────────────────────────────────────
@@ -80,25 +112,34 @@ export const voucherCardsApi = {
   disableByRange: (from: string, to: string) => api.post('/voucher-cards/range/disable', null, { params: { from, to } }),
 }
 
-// ── Admin Users ───────────────────────────────────────────────
-export const adminUsersApi = {
-  list: () => api.get('/admin-users'),
-  archived: () => api.get('/admin-users/archived'),
-  create: (data: unknown) => api.post('/admin-users', data),
-  update: (id: number, data: unknown) => api.patch(`/admin-users/${id}`, data),
-  archive: (id: number) => api.post(`/admin-users/${id}/archive`),
-  restore: (id: number) => api.post(`/admin-users/${id}/restore`),
-  permanentDelete: (id: number) => api.delete(`/admin-users/${id}/permanent`),
-  getPermissions: (id: number) => api.get(`/admin-users/${id}/permissions`),
-  setPermissions: (id: number, permissions: string[]) =>
-    api.patch(`/admin-users/${id}/permissions`, { permissions }),
-}
 
 // ── Accounting ────────────────────────────────────────────────
 export const accountingApi = {
   sessions: (active?: boolean) =>
     api.get('/accounting/sessions', { params: active !== undefined ? { active } : {} }),
   authLogs: () => api.get('/accounting/auth-logs'),
+  authLogMonths: () => api.get('/accounting/auth-logs/months'),
+  deleteAuthLogsByMonth: (month: string) => api.delete(`/accounting/auth-logs/months/${month}`),
   stats: () => api.get('/accounting/stats'),
   dashboard: () => api.get('/accounting/dashboard'),
+  cleanupStaleSessions: () => api.post('/accounting/sessions/cleanup-stale'),
+}
+
+// ── SSTP VPN ──────────────────────────────────────────────────
+export const sstpApi = {
+  // user management
+  listUsers: () => api.get('/sstp/users'),
+  createUser: (data: { username: string; password: string; ip?: string }) => api.post('/sstp/users', data),
+  updateUser: (username: string, password: string) => api.patch(`/sstp/users/${username}`, { password }),
+  deleteUser: (username: string) => api.delete(`/sstp/users/${username}`),
+  // runtime
+  status: () => api.get('/sstp/status'),
+  stat: () => api.get('/sstp/stat'),
+  sessions: () => api.get('/sstp/sessions'),
+  terminate: (username: string) => api.post(`/sstp/terminate/${username}`),
+  // config
+  config: () => api.get('/sstp/config'),
+  updateConfig: (data: { gwIp?: string; ipPool?: string; dns1?: string; dns2?: string }) =>
+    api.post('/sstp/config', data),
+  restart: () => api.post('/sstp/restart'),
 }

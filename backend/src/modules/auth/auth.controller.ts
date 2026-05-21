@@ -3,6 +3,7 @@ import { Request } from 'express';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { SelfRegisterDto } from './dto/self-register.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AdminUser, AdminRole } from '../../database/entities/admin-user.entity';
@@ -33,6 +34,19 @@ export class AuthController {
   @Post('setup')
   setupFirstAdmin(@Body() dto: RegisterDto) {
     return this.authService.setupFirstAdmin(dto);
+  }
+
+  @Post('self-register')
+  selfRegister(@Body() dto: SelfRegisterDto) {
+    return this.authService.selfRegister(dto);
+  }
+
+  /** Apex-domain login: caller doesn't know the user's subdomain. We look up
+   *  the user, validate the password, and return the right subdomain along
+   *  with the token so the frontend can redirect & auto-login. */
+  @Post('login-from-landing')
+  loginFromLanding(@Body() dto: LoginDto) {
+    return this.authService.loginFromLanding(dto);
   }
 
   @Get('profile')

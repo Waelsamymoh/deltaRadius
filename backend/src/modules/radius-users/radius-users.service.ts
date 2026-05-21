@@ -12,6 +12,7 @@ import { AdminUser } from '../../database/entities/admin-user.entity';
 import { CreateRadiusUserDto } from './dto/create-user.dto';
 import { UpdateRadiusUserDto } from './dto/update-user.dto';
 import { getTenantId } from '../../common/helpers/tenant.helper';
+import { QuotaEnforcerService } from '../quota/quota-enforcer.service';
 
 @Injectable()
 export class RadiusUsersService {
@@ -31,6 +32,7 @@ export class RadiusUsersService {
     @InjectRepository(Nas)
     private readonly nasRepo: Repository<Nas>,
     private readonly dataSource: DataSource,
+    private readonly quotaEnforcer: QuotaEnforcerService,
   ) {}
 
   private w<T>(tenantId: number | null, extra: Partial<T> = {}): FindOptionsWhere<T> {
@@ -280,6 +282,9 @@ export class RadiusUsersService {
   async findAll(user: AdminUser) {
     const tenantId = getTenantId(user);
 
+    // Live-sync usage so the list reflects the latest accounting bytes
+    await this.quotaEnforcer.syncAllUsage().catch(() => {});
+
     let profiles;
     if (tenantId) {
       profiles = await this.profileRepo.find({
@@ -299,18 +304,38 @@ export class RadiusUsersService {
         .getMany();
     }
 
-    // bulk fetch usage from user_data_usage (cumulative, persists across sessions)
+    // bulk fetch usage from user_data_usage (cumulative, persists across sessions) — per tenant
     const usernames = profiles.map(p => p.username);
     const usageMap: Record<string, { dl: number; ul: number }> = {};
+    const topupsMap: Record<string, Array<{ id: number; sizeGb: string; consumedBytes: string; appliedAt: Date; expiresAt: Date | null; packageName?: string }>> = {};
     if (usernames.length) {
       const rows = await this.dataSource.query(
         `SELECT username,
                 total_upload_bytes   AS ul,
                 total_download_bytes AS dl
-         FROM user_data_usage WHERE username = ANY($1)`,
-        [usernames],
+         FROM user_data_usage
+         WHERE username = ANY($1::text[])
+           AND COALESCE(tenant_id,-1) = COALESCE($2,-1)`,
+        [usernames, tenantId],
       );
       for (const r of rows) usageMap[r.username] = { dl: Number(r.dl), ul: Number(r.ul) };
+
+      // Fetch all non-expired topups per user (oldest first for FIFO consumption)
+      const topupRows = await this.dataSource.query(
+        `SELECT ut.id, ut.username, ut.size_gb AS "sizeGb", ut.consumed_bytes AS "consumedBytes",
+                ut.applied_at AS "appliedAt", ut.expires_at AS "expiresAt", tp.name AS "packageName"
+         FROM user_topups ut
+         LEFT JOIN topup_packages tp ON tp.id = ut.package_id
+         WHERE ut.username = ANY($1::text[])
+           AND COALESCE(ut.tenant_id,-1) = COALESCE($2,-1)
+           AND (ut.expires_at IS NULL OR ut.expires_at > NOW())
+         ORDER BY ut.applied_at ASC`,
+        [usernames, tenantId],
+      );
+      for (const r of topupRows) {
+        if (!topupsMap[r.username]) topupsMap[r.username] = [];
+        topupsMap[r.username].push({ id: r.id, sizeGb: r.sizeGb, consumedBytes: r.consumedBytes, appliedAt: r.appliedAt, expiresAt: r.expiresAt, packageName: r.packageName });
+      }
     }
 
     const months: Record<string,number> = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
@@ -322,17 +347,42 @@ export class RadiusUsersService {
       const remainingDays = Math.ceil((expiryDate.getTime() - Date.now()) / 86400000);
       const usage = usageMap[p.username] ?? { dl: 0, ul: 0 };
       const plan = p.plan;
-      const usedBytes = plan?.totalLimitGb ? (usage.dl + usage.ul) : usage.dl;
-      const limitBytes = plan?.totalLimitGb
-        ? Math.floor(Number(plan.totalLimitGb) * 1024**3)
-        : plan?.downloadLimitGb
-          ? Math.floor(Number(plan.downloadLimitGb) * 1024**3)
+      const planTotalGb = plan?.totalLimitGb ? Number(plan.totalLimitGb) : 0;
+      const planDlGb    = plan?.downloadLimitGb ? Number(plan.downloadLimitGb) : 0;
+      const isTotalQuota = planTotalGb > 0;
+      const usedBytes = isTotalQuota ? (usage.dl + usage.ul) : usage.dl;
+      const limitBytes = isTotalQuota
+        ? Math.floor(planTotalGb * 1024**3)
+        : planDlGb > 0
+          ? Math.floor(planDlGb * 1024**3)
           : null;
-      const bonusRemaining = Number(p.bonusRemainingBytes || '0');
+      // Per-topup tracking: each topup has stored consumed_bytes (persists across
+      // plan renewals). On top of that, the current cycle's overage is
+      // distributed FIFO into remaining capacity for live display.
       const planLimitForBonus = limitBytes ?? 0;
       const overage = Math.max(0, usedBytes - planLimitForBonus);
-      const bonusTotal = bonusRemaining + overage;
-      const bonusUsed  = Math.min(overage, bonusTotal);
+      const userTopups = topupsMap[p.username] ?? [];
+      let remOverage = overage;
+      const topupsDetail = userTopups.map(t => {
+        const originalBytes = Math.floor(Number(t.sizeGb) * 1024 ** 3);
+        const storedConsumed = Number(t.consumedBytes ?? '0');
+        const capacity = Math.max(0, originalBytes - storedConsumed);
+        const cycleShare = Math.min(remOverage, capacity);
+        remOverage -= cycleShare;
+        const totalConsumed = storedConsumed + cycleShare;
+        return {
+          id: t.id,
+          packageName: t.packageName ?? null,
+          appliedAt: t.appliedAt,
+          expiresAt: t.expiresAt,
+          totalBytes: originalBytes,
+          usedBytes: totalConsumed,
+          remainingBytes: Math.max(0, originalBytes - totalConsumed),
+        };
+      });
+      const bonusTotal = topupsDetail.reduce((s, t) => s + t.totalBytes, 0);
+      const bonusUsed  = topupsDetail.reduce((s, t) => s + t.usedBytes, 0);
+      const bonusRemaining = topupsDetail.reduce((s, t) => s + t.remainingBytes, 0);
       return {
         username: p.username,
         firstName: p.firstName,
@@ -353,6 +403,7 @@ export class RadiusUsersService {
         bonusTotalBytes:     bonusTotal,
         bonusUsedBytes:      bonusUsed,
         bonusRemainingBytes: bonusRemaining,
+        topups: topupsDetail,
       };
     });
   }
@@ -402,6 +453,10 @@ export class RadiusUsersService {
     const replyAttrs = this.buildReplyAttrs(plan);
 
     await this.dataSource.transaction(async (mgr) => {
+      // password supplied → Cleartext-Password (works with PAP/CHAP/MS-CHAP).
+      // password blank    → Auth-Type=Accept   (passwordless — needs the
+      //                      "Auth-Type Accept { ok }" handler in sites-enabled/default
+      //                      AND http-pap on the MikroTik hotspot profile).
       if (password) {
         await mgr.save(RadCheck, {
           username: dto.username, attribute: 'Cleartext-Password', op: ':=', value: password, tenantId,
@@ -427,21 +482,24 @@ export class RadiusUsersService {
         await mgr.save(RadCheck, { username: dto.username, ...attr, tenantId });
       }
 
-      // New user: reset all rows for this username across tenants, then insert for this tenant
-      // quota_reset_radacct_id = MAX(radacctid) so any future session (radacctid > MAX) counts.
+      // New user: snapshot current cumulative bytes for this username as the
+      // baseline. Filter by tenant_id so each tenant gets its own baseline.
       await mgr.query(
         `UPDATE user_data_usage
-           SET total_download_bytes     = 0,
-               total_upload_bytes       = 0,
-               updated_at               = NOW(),
-               quota_reset_at           = NOW(),
-               quota_reset_radacct_id   = COALESCE((SELECT MAX(radacctid) FROM radacct), 0)
-         WHERE username = $1`,
-        [dto.username],
+           SET total_download_bytes      = 0,
+               total_upload_bytes        = 0,
+               updated_at                = NOW(),
+               quota_reset_at            = NOW(),
+               quota_baseline_out_bytes  = COALESCE((SELECT SUM(acctoutputoctets) FROM radacct WHERE username=$1::text AND COALESCE(tenant_id,-1)=COALESCE($2,-1)), 0),
+               quota_baseline_in_bytes   = COALESCE((SELECT SUM(acctinputoctets)  FROM radacct WHERE username=$1::text AND COALESCE(tenant_id,-1)=COALESCE($2,-1)), 0)
+         WHERE username = $1::text AND COALESCE(tenant_id,-1)=COALESCE($2,-1)`,
+        [dto.username, tenantId],
       );
       await mgr.query(
-        `INSERT INTO user_data_usage (username, tenant_id, total_download_bytes, total_upload_bytes, updated_at, quota_reset_at, quota_reset_radacct_id)
-         VALUES ($1, $2, 0, 0, NOW(), NOW(), COALESCE((SELECT MAX(radacctid) FROM radacct), 0))
+        `INSERT INTO user_data_usage (username, tenant_id, total_download_bytes, total_upload_bytes, updated_at, quota_reset_at, quota_baseline_out_bytes, quota_baseline_in_bytes)
+         VALUES ($1::text, $2, 0, 0, NOW(), NOW(),
+           COALESCE((SELECT SUM(acctoutputoctets) FROM radacct WHERE username=$1::text AND COALESCE(tenant_id,-1)=COALESCE($2,-1)), 0),
+           COALESCE((SELECT SUM(acctinputoctets)  FROM radacct WHERE username=$1::text AND COALESCE(tenant_id,-1)=COALESCE($2,-1)), 0))
          ON CONFLICT (username, COALESCE(tenant_id, -1)) DO NOTHING`,
         [dto.username, tenantId],
       );
@@ -472,10 +530,12 @@ export class RadiusUsersService {
     const newStartDate    = dto.startDate    ?? profile.startDate;
     const newDurationDays = dto.durationDays ?? profile.durationDays;
 
-    // Renewal restoration: if subscription dates are being renewed and the user is
-    // currently on a fallback plan, restore the original plan automatically (unless
-    // the admin explicitly chose a different plan in this update).
-    const isRenewal = !!(dto.startDate || dto.durationDays);
+    // Renewal restoration: only treat as renewal if dates ACTUALLY changed
+    // (frontends often pre-fill these fields, so we compare against the
+    // stored values instead of just checking if the keys were sent).
+    const startChanged    = !!dto.startDate    && String(dto.startDate)    !== String(profile.startDate);
+    const durationChanged = !!dto.durationDays && Number(dto.durationDays) !== Number(profile.durationDays);
+    const isRenewal       = startChanged || durationChanged;
     let effectivePlanId = dto.planId ?? profile.planId;
     if (isRenewal && dto.planId === undefined && profile.originalPlanId != null) {
       effectivePlanId = profile.originalPlanId;
@@ -503,13 +563,14 @@ export class RadiusUsersService {
     await this.dataSource.transaction(async (mgr) => {
       if (dto.password !== undefined) {
         const newPass = dto.password?.trim() ?? '';
+        // Swap between Cleartext-Password (with password) and Auth-Type=Accept (passwordless).
+        await mgr.delete(RadCheck, this.w<RadCheck>(tenantId, { username, attribute: 'Cleartext-Password' }));
+        await mgr.delete(RadCheck, this.w<RadCheck>(tenantId, { username, attribute: 'Auth-Type' }));
         if (newPass) {
-          await mgr.delete(RadCheck, this.w<RadCheck>(tenantId, { username, attribute: 'Auth-Type' }));
           await mgr.save(RadCheck, {
             username, attribute: 'Cleartext-Password', op: ':=', value: newPass, tenantId,
           });
         } else {
-          await mgr.delete(RadCheck, this.w<RadCheck>(tenantId, { username, attribute: 'Cleartext-Password' }));
           await mgr.save(RadCheck, {
             username, attribute: 'Auth-Type', op: ':=', value: 'Accept', tenantId,
           });
@@ -523,10 +584,10 @@ export class RadiusUsersService {
           username, attribute: 'Expiration', op: ':=', value: expiration, tenantId,
         });
 
-        // Compute bonus carryover BEFORE resetting consumption:
-        //   used_from_bonus = max(0, consumed_total - plan_limit_bytes)
-        //   new_bonus       = max(0, current_bonus - used_from_bonus)
-        // Only the unused portion of topup bonus carries over to the next cycle.
+        // Topups are independent of plan renewal — bonus is NEVER renewed.
+        // BEFORE resetting usage: snapshot the current overage and bake it into
+        // per-topup consumed_bytes (FIFO, oldest first). This preserves
+        // consumption history so the bonus remains "spent" across renewals.
         const usageRows = await mgr.query(
           `SELECT COALESCE(total_download_bytes,0)::bigint AS dl, COALESCE(total_upload_bytes,0)::bigint AS ul
              FROM user_data_usage WHERE username=$1 AND COALESCE(tenant_id,-1)=COALESCE($2,-1)`,
@@ -534,7 +595,6 @@ export class RadiusUsersService {
         );
         const consumedDl = BigInt(usageRows[0]?.dl ?? 0);
         const consumedUl = BigInt(usageRows[0]?.ul ?? 0);
-        const currentBonus = BigInt(profile.bonusRemainingBytes || '0');
 
         const effectivePlan = plan ?? profile.plan;
         let planLimitBytes = 0n;
@@ -549,25 +609,72 @@ export class RadiusUsersService {
           ? (consumedDl + consumedUl)
           : consumedDl;
         const overage = consumed > planLimitBytes ? consumed - planLimitBytes : 0n;
-        const newBonus = overage >= currentBonus ? 0n : currentBonus - overage;
-        profile.bonusRemainingBytes = String(newBonus);
 
-        // Reset usage counters
+        // Distribute overage across non-expired topups (FIFO oldest first)
+        if (overage > 0n) {
+          const topups = await mgr.query(
+            `SELECT id, size_gb::numeric AS size_gb, consumed_bytes::bigint AS consumed_bytes
+             FROM user_topups
+             WHERE username=$1 AND COALESCE(tenant_id,-1)=COALESCE($2,-1)
+               AND (expires_at IS NULL OR expires_at > NOW())
+             ORDER BY applied_at ASC`,
+            [username, tenantId],
+          );
+          let remOverage = overage;
+          for (const t of topups) {
+            if (remOverage <= 0n) break;
+            const original = BigInt(Math.floor(Number(t.size_gb) * 1024 ** 3));
+            const alreadyConsumed = BigInt(t.consumed_bytes ?? 0);
+            const capacity = original > alreadyConsumed ? original - alreadyConsumed : 0n;
+            if (capacity === 0n) continue;
+            const take = remOverage > capacity ? capacity : remOverage;
+            await mgr.query(
+              `UPDATE user_topups SET consumed_bytes = consumed_bytes + $1::bigint WHERE id = $2`,
+              [String(take), t.id],
+            );
+            remOverage -= take;
+          }
+        }
+
+        // Recompute profile.bonusRemainingBytes from topups (= remaining pool)
+        const rem = await mgr.query(
+          `SELECT COALESCE(SUM(GREATEST(0, (size_gb * (1024*1024*1024))::bigint - consumed_bytes)), 0)::bigint AS rem
+           FROM user_topups
+           WHERE username=$1 AND COALESCE(tenant_id,-1)=COALESCE($2,-1)
+             AND (expires_at IS NULL OR expires_at > NOW())`,
+          [username, tenantId],
+        );
+        profile.bonusRemainingBytes = String(rem[0]?.rem ?? '0');
+
+        // Reset usage counters: snapshot current cumulative bytes as baseline (per-tenant)
         await mgr.query(
           `UPDATE user_data_usage
-             SET total_download_bytes     = 0,
-                 total_upload_bytes       = 0,
-                 updated_at               = NOW(),
-                 quota_reset_at           = NOW(),
-                 quota_reset_radacct_id   = COALESCE((SELECT MAX(radacctid) FROM radacct), 0)
-           WHERE username = $1`,
+             SET total_download_bytes      = 0,
+                 total_upload_bytes        = 0,
+                 updated_at                = NOW(),
+                 quota_reset_at            = NOW(),
+                 quota_baseline_out_bytes  = COALESCE((SELECT SUM(acctoutputoctets) FROM radacct WHERE username=$1::text AND COALESCE(tenant_id,-1)=COALESCE($2,-1)), 0),
+                 quota_baseline_in_bytes   = COALESCE((SELECT SUM(acctinputoctets)  FROM radacct WHERE username=$1::text AND COALESCE(tenant_id,-1)=COALESCE($2,-1)), 0)
+           WHERE username = $1::text AND COALESCE(tenant_id,-1)=COALESCE($2,-1)`,
+          [username, tenantId],
+        );
+        await mgr.query(
+          `INSERT INTO user_data_usage (username, tenant_id, total_download_bytes, total_upload_bytes, updated_at, quota_reset_at, quota_baseline_out_bytes, quota_baseline_in_bytes)
+           VALUES ($1::text, $2, 0, 0, NOW(), NOW(),
+             COALESCE((SELECT SUM(acctoutputoctets) FROM radacct WHERE username=$1::text AND COALESCE(tenant_id,-1)=COALESCE($2,-1)), 0),
+             COALESCE((SELECT SUM(acctinputoctets)  FROM radacct WHERE username=$1::text AND COALESCE(tenant_id,-1)=COALESCE($2,-1)), 0))
+           ON CONFLICT (username, COALESCE(tenant_id, -1)) DO NOTHING`,
+          [username, tenantId],
+        );
+
+        // Renewal clears the auth block from quota exhaustion (if any)
+        await mgr.query(
+          `DELETE FROM radcheck WHERE username = $1 AND attribute = 'Calling-Station-Id' AND value = '__QUOTA_EXHAUSTED__'`,
           [username],
         );
         await mgr.query(
-          `INSERT INTO user_data_usage (username, tenant_id, total_download_bytes, total_upload_bytes, updated_at, quota_reset_at, quota_reset_radacct_id)
-           VALUES ($1, $2, 0, 0, NOW(), NOW(), COALESCE((SELECT MAX(radacctid) FROM radacct), 0))
-           ON CONFLICT (username, COALESCE(tenant_id, -1)) DO NOTHING`,
-          [username, tenantId],
+          `DELETE FROM radreply WHERE username = $1 AND attribute = 'Reply-Message' AND value LIKE '%الكوتا%'`,
+          [username],
         );
       }
 
@@ -678,6 +785,9 @@ export class RadiusUsersService {
     });
     if (!profile) throw new NotFoundException(`User '${username}' not found`);
 
+    // Live-sync usage so the stats reflect the latest accounting packets
+    await this.quotaEnforcer.syncUsage(username, tenantId).catch(() => {});
+
     // Remaining days
     const expiryStr = this.expirationDate(profile.startDate, profile.durationDays);
     const months: Record<string,number> = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
@@ -685,36 +795,41 @@ export class RadiusUsersService {
     const expiryDate = new Date(Number(parts[2]), months[parts[0]], Number(parts[1]));
     const remainingDays = Math.ceil((expiryDate.getTime() - Date.now()) / 86400000);
 
-    // Usage totals from user_data_usage (persistent, reset-aware)
+    // Usage totals from user_data_usage (persistent, reset-aware) — scoped per tenant
     const usageRows = await this.dataSource.query(
       `SELECT
          COALESCE(total_upload_bytes, 0)::bigint   AS total_upload,
          COALESCE(total_download_bytes, 0)::bigint AS total_download
-       FROM user_data_usage WHERE username = $1
+       FROM user_data_usage
+       WHERE username = $1::text
+         AND COALESCE(tenant_id,-1) = COALESCE($2,-1)
        ORDER BY quota_reset_at DESC LIMIT 1`,
-      [username],
+      [username, tenantId],
     );
     const totalUploadBytes   = Number(usageRows[0]?.total_upload   ?? 0);
     const totalDownloadBytes = Number(usageRows[0]?.total_download ?? 0);
 
-    // Active session
+    // Active session — scoped per tenant
     const activeRows = await this.dataSource.query(
       `SELECT framedipaddress, nasipaddress, acctstarttime,
               acctinputoctets, acctoutputoctets, acctsessiontime
        FROM radacct
-       WHERE username = $1 AND acctstoptime IS NULL
+       WHERE username = $1::text AND acctstoptime IS NULL
+         AND COALESCE(tenant_id,-1) = COALESCE($2,-1)
        ORDER BY acctstarttime DESC LIMIT 1`,
-      [username],
+      [username, tenantId],
     );
     const active = activeRows[0] ?? null;
 
-    // Recent sessions (last 10)
+    // Recent sessions (last 10) — scoped per tenant
     const sessions = await this.dataSource.query(
       `SELECT acctstarttime, acctstoptime, framedipaddress, nasipaddress,
               acctinputoctets, acctoutputoctets, acctsessiontime, acctterminatecause
-       FROM radacct WHERE username = $1
+       FROM radacct
+       WHERE username = $1::text
+         AND COALESCE(tenant_id,-1) = COALESCE($2,-1)
        ORDER BY acctstarttime DESC LIMIT 10`,
-      [username],
+      [username, tenantId],
     );
 
     const plan = profile.plan;
@@ -726,13 +841,33 @@ export class RadiusUsersService {
     const usedForLimit = isTotalQuota ? (totalDownloadBytes + totalUploadBytes) : totalDownloadBytes;
     const limitForCalc = isTotalQuota ? totalLimitBytes : downloadLimitBytes;
 
-    // Bonus / topup info — how much of the bonus has been used in the current cycle
-    const bonusRemainingBytes = Number(profile.bonusRemainingBytes || '0');
+    // Bonus = stored per-topup consumed_bytes + current cycle overage share (FIFO).
+    // Fetch active topups and compute remaining per topup.
+    const topupRowsStats: { id: number; sizeGb: string; consumedBytes: string }[] =
+      await this.dataSource.query(
+        `SELECT id, size_gb AS "sizeGb", consumed_bytes AS "consumedBytes"
+         FROM user_topups
+         WHERE username = $1::text
+           AND COALESCE(tenant_id,-1) = COALESCE($2,-1)
+           AND (expires_at IS NULL OR expires_at > NOW())
+         ORDER BY applied_at ASC`,
+        [username, tenantId],
+      );
     const planLimitForBonus = limitForCalc ?? 0;
     const overage = Math.max(0, usedForLimit - planLimitForBonus);
-    // bonus pool that was applied to this cycle = current remaining + already consumed from bonus
-    const bonusTotalBytes = bonusRemainingBytes + overage;
-    const bonusUsedBytes  = Math.min(overage, bonusTotalBytes);
+    let remOverageStats = overage;
+    let bonusTotalBytes = 0;
+    let bonusUsedBytes = 0;
+    for (const t of topupRowsStats) {
+      const original = Math.floor(Number(t.sizeGb) * 1024 ** 3);
+      const storedConsumed = Number(t.consumedBytes ?? '0');
+      const capacity = Math.max(0, original - storedConsumed);
+      const cycleShare = Math.min(remOverageStats, capacity);
+      remOverageStats -= cycleShare;
+      bonusTotalBytes += original;
+      bonusUsedBytes  += storedConsumed + cycleShare;
+    }
+    const bonusRemainingBytes = Math.max(0, bonusTotalBytes - bonusUsedBytes);
 
     return {
       username,

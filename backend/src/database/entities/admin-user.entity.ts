@@ -5,10 +5,11 @@ import {
 import { Tenant } from './tenant.entity';
 
 export enum AdminRole {
-  OWNER     = 'owner',      // SaaS platform owner — sees all tenants
-  SUPERADMIN = 'superadmin', // per-tenant top admin
-  ADMIN     = 'admin',      // per-tenant mid admin
-  MODERATOR = 'moderator',  // per-tenant seller
+  OWNER           = 'owner',           // SaaS platform owner — sees all tenants
+  OWNER_ASSISTANT = 'owner_assistant', // owner's helper — cross-tenant access, scoped by `permissions`
+  SUPERADMIN      = 'superadmin',      // per-tenant top admin
+  ADMIN           = 'admin',           // per-tenant mid admin
+  MODERATOR       = 'moderator',       // per-tenant seller
 }
 
 @Entity('admin_users')

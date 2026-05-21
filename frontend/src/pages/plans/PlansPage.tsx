@@ -13,20 +13,26 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 
+// empty/blank input → null (means "no limit"); otherwise coerce to number
+const optionalNum = z.preprocess(
+  v => (v === '' || v === undefined || v === null) ? null : v,
+  z.coerce.number().min(0).nullable(),
+).optional()
+
 const schema = z.object({
   name: z.string().min(1, 'مطلوب'),
   description: z.string().optional(),
-  downloadMbps: z.coerce.number().min(0).optional(),
-  uploadMbps: z.coerce.number().min(0).optional(),
-  sessionTimeoutMin: z.coerce.number().min(0).optional(),
-  downloadLimitGb: z.coerce.number().min(0).optional(),
-  uploadLimitGb: z.coerce.number().min(0).optional(),
-  totalLimitGb: z.coerce.number().min(0).optional(),
-  burstDownloadMbps: z.coerce.number().min(0).optional(),
-  burstUploadMbps: z.coerce.number().min(0).optional(),
-  burstThresholdDownloadMbps: z.coerce.number().min(0).optional(),
-  burstThresholdUploadMbps: z.coerce.number().min(0).optional(),
-  burstTimeSeconds: z.coerce.number().min(0).optional(),
+  downloadMbps: optionalNum,
+  uploadMbps: optionalNum,
+  sessionTimeoutMin: optionalNum,
+  downloadLimitGb: optionalNum,
+  uploadLimitGb: optionalNum,
+  totalLimitGb: optionalNum,
+  burstDownloadMbps: optionalNum,
+  burstUploadMbps: optionalNum,
+  burstThresholdDownloadMbps: optionalNum,
+  burstThresholdUploadMbps: optionalNum,
+  burstTimeSeconds: optionalNum,
   framedPool: z.string().optional(),
   quotaAction: z.enum(['none', 'disconnect', 'switch']).optional(),
   fallbackPlanId: z.coerce.number().optional().nullable(),
@@ -143,6 +149,11 @@ export default function PlansPage() {
       payload.burstThresholdDownloadMbps = null
       payload.burstThresholdUploadMbps = null
       payload.burstTimeSeconds = null
+    }
+    // Auto-default quota_action when a quota is set but action is "none"
+    const hasQuota = !!(payload.totalLimitGb || payload.downloadLimitGb || payload.uploadLimitGb)
+    if (hasQuota && (!payload.quotaAction || payload.quotaAction === 'none')) {
+      payload.quotaAction = 'disconnect'
     }
     if (editingId !== null) updateMutation.mutate({ id: editingId, data: payload })
     else createMutation.mutate(payload)
@@ -287,7 +298,7 @@ export default function PlansPage() {
               </div>
               <div className="space-y-1">
                 <Label className="text-xs flex items-center gap-1"><Clock className="h-3 w-3 text-orange-500" /> مدة الجلسة (د)</Label>
-                <Input type="number" min="0" {...register('sessionTimeoutMin')} placeholder="0 = غير محدود" />
+                <Input type="number" min="0" {...register('sessionTimeoutMin')} placeholder="فارغ = غير محدود" />
               </div>
             </div>
 
@@ -347,15 +358,15 @@ export default function PlansPage() {
             <div className="grid grid-cols-3 gap-3">
               <div className="space-y-1">
                 <Label className="text-xs flex items-center gap-1"><Database className="h-3 w-3 text-purple-500" /> إجمالي كوتا (GB)</Label>
-                <Input type="number" step="0.1" min="0" {...register('totalLimitGb')} placeholder="0 = غير محدود" />
+                <Input type="number" step="0.1" min="0" {...register('totalLimitGb')} placeholder="فارغ = غير محدود" />
               </div>
               <div className="space-y-1">
                 <Label className="text-xs flex items-center gap-1"><span className="text-blue-600">↓</span> حد تحميل (GB)</Label>
-                <Input type="number" step="0.1" min="0" {...register('downloadLimitGb')} placeholder="0 = غير محدود" />
+                <Input type="number" step="0.1" min="0" {...register('downloadLimitGb')} placeholder="فارغ = غير محدود" />
               </div>
               <div className="space-y-1">
                 <Label className="text-xs flex items-center gap-1"><span className="text-green-600">↑</span> حد رفع (GB)</Label>
-                <Input type="number" step="0.1" min="0" {...register('uploadLimitGb')} placeholder="0 = غير محدود" />
+                <Input type="number" step="0.1" min="0" {...register('uploadLimitGb')} placeholder="فارغ = غير محدود" />
               </div>
             </div>
 

@@ -22,22 +22,30 @@ import { UserTopup } from './entities/user-topup.entity';
   imports: [
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        type: 'postgres',
-        host: config.get<string>('database.host'),
-        port: config.get<number>('database.port'),
-        database: config.get<string>('database.name'),
-        username: config.get<string>('database.username'),
-        password: config.get<string>('database.password'),
-        synchronize: false,
-        logging: process.env.NODE_ENV === 'development',
-        entities: [
-          Tenant, Nas, RadCheck, RadReply, RadGroupCheck,
-          RadGroupReply, RadUserGroup, RadAcct, RadPostAuth, AdminUser, Plan, UserProfile,
-          UserDataUsage, VoucherCard, TopupPackage, UserTopup,
-        ],
-        migrations: ['dist/database/migrations/*.js'],
-      }),
+      useFactory: (config: ConfigService) => {
+        const url = config.get<string>('database.url');
+        const base = {
+          type: 'postgres' as const,
+          synchronize: false,
+          logging: process.env.NODE_ENV === 'development',
+          entities: [
+            Tenant, Nas, RadCheck, RadReply, RadGroupCheck,
+            RadGroupReply, RadUserGroup, RadAcct, RadPostAuth, AdminUser, Plan, UserProfile,
+            UserDataUsage, VoucherCard, TopupPackage, UserTopup,
+          ],
+          migrations: ['dist/database/migrations/*.js'],
+        };
+        return url
+          ? { ...base, url, ssl: { rejectUnauthorized: false } }
+          : {
+              ...base,
+              host: config.get<string>('database.host'),
+              port: config.get<number>('database.port'),
+              database: config.get<string>('database.name'),
+              username: config.get<string>('database.username'),
+              password: config.get<string>('database.password'),
+            };
+      },
     }),
   ],
   exports: [TypeOrmModule],

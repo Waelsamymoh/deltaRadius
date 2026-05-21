@@ -35,6 +35,11 @@ export class Nas {
   @Column({ name: 'tenant_id', nullable: true })
   tenantId: number | null;
 
+  /** SSTP username paired with this NAS (chap-secrets entry).
+   *  Backfilled from chap-secrets on first archive cycle for legacy rows. */
+  @Column({ name: 'sstp_username', type: 'varchar', length: 100, nullable: true })
+  sstpUsername: string | null;
+
   @ManyToOne(() => Tenant, (t) => t.nasDevices, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'tenant_id' })
   tenant: Tenant;

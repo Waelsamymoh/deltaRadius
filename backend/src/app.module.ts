@@ -12,11 +12,12 @@ import { NasModule } from './modules/nas/nas.module';
 import { GroupsModule } from './modules/groups/groups.module';
 import { AccountingModule } from './modules/accounting/accounting.module';
 import { PlansModule } from './modules/plans/plans.module';
-import { AdminUsersModule } from './modules/admin-users/admin-users.module';
 import { SstpModule } from './modules/sstp/sstp.module';
 import { QuotaModule } from './modules/quota/quota.module';
 import { VoucherCardsModule } from './modules/voucher-cards/voucher-cards.module';
 import { TopupsModule } from './modules/topups/topups.module';
+import { OwnerAssistantsModule } from './modules/owner-assistants/owner-assistants.module';
+import { ServerHealthModule } from './modules/server-health/server-health.module';
 import { TenantContextInterceptor } from './common/interceptors/tenant-context.interceptor';
 import databaseConfig from './config/database.config';
 
@@ -34,11 +35,12 @@ import databaseConfig from './config/database.config';
     GroupsModule,
     AccountingModule,
     PlansModule,
-    AdminUsersModule,
     SstpModule,
     QuotaModule,
     VoucherCardsModule,
     TopupsModule,
+    OwnerAssistantsModule,
+    ServerHealthModule,
   ],
   providers: [
     { provide: APP_PIPE, useValue: new ValidationPipe({ whitelist: true, transform: true }) },

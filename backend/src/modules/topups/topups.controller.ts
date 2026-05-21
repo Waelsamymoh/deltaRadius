@@ -42,4 +42,18 @@ export class TopupsController {
   userTopups(@Param('username') username: string, @Req() req: any) {
     return this.svc.getUserTopups(username, req.user);
   }
+
+  @Delete('radius-users/:username/bonus')
+  clearUserBonus(@Param('username') username: string, @Req() req: any) {
+    return this.svc.clearUserBonus(username, req.user);
+  }
+
+  @Delete('radius-users/:username/topups/:topupId')
+  clearOneTopup(
+    @Param('username') username: string,
+    @Param('topupId', ParseIntPipe) topupId: number,
+    @Req() req: any,
+  ) {
+    return this.svc.clearOneTopup(username, topupId, req.user);
+  }
 }

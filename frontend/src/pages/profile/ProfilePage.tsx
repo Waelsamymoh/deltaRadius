@@ -3,7 +3,7 @@ import { useMutation } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { UserCog, KeyRound, CheckCircle2 } from 'lucide-react'
+import { UserCog, KeyRound, CheckCircle2, Mail, ShieldCheck } from 'lucide-react'
 import { authApi } from '@/api/endpoints'
 import { useAuthStore } from '@/store/auth.store'
 import { Button } from '@/components/ui/button'
@@ -63,8 +63,16 @@ export default function ProfilePage() {
     },
   })
 
+  const roleLabels: Record<string, string> = {
+    owner: 'مالك النظام',
+    owner_assistant: 'مساعد المالك',
+    superadmin: 'مدير',
+    admin: 'مشرف',
+    moderator: 'بائع',
+  }
+
   return (
-    <div className="p-8 max-w-xl" dir="rtl">
+    <div className="p-8">
       <div className="mb-8">
         <h1 className="text-3xl font-bold flex items-center gap-2">
           <UserCog className="h-7 w-7" /> الملف الشخصي
@@ -72,8 +80,37 @@ export default function ProfilePage() {
         <p className="text-muted-foreground mt-1">تعديل بيانات حسابك</p>
       </div>
 
-      {/* Info card */}
+      {/* Account summary header */}
       <Card className="mb-6">
+        <CardContent className="pt-6">
+          <div className="flex items-center gap-4">
+            <div className="h-16 w-16 rounded-full bg-primary/15 border border-primary/30 flex items-center justify-center text-primary font-black text-2xl shrink-0">
+              {(user?.fullName || user?.email || '?')[0].toUpperCase()}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-lg font-bold text-foreground truncate">
+                  {user?.fullName || user?.email}
+                </h2>
+                <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-primary/15 text-primary border border-primary/20">
+                  <ShieldCheck className="h-3 w-3" />
+                  {roleLabels[user?.role ?? ''] ?? user?.role}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 text-sm text-muted-foreground mt-1">
+                <Mail className="h-3.5 w-3.5" />
+                <span className="font-mono">{user?.email}</span>
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Two-column grid: info + password */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+      {/* Info card */}
+      <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base flex items-center gap-2">
             <UserCog className="h-4 w-4" /> البيانات الأساسية
@@ -103,7 +140,7 @@ export default function ProfilePage() {
                 {infoMutation.isPending ? 'جاري الحفظ...' : 'حفظ'}
               </Button>
               {infoSuccess && (
-                <span className="flex items-center gap-1 text-green-600 text-sm">
+                <span className="flex items-center gap-1 text-emerald-500 text-sm">
                   <CheckCircle2 className="h-4 w-4" /> تم الحفظ
                 </span>
               )}
@@ -152,7 +189,7 @@ export default function ProfilePage() {
                 {passwordMutation.isPending ? 'جاري التغيير...' : 'تغيير كلمة المرور'}
               </Button>
               {passSuccess && (
-                <span className="flex items-center gap-1 text-green-600 text-sm">
+                <span className="flex items-center gap-1 text-emerald-500 text-sm">
                   <CheckCircle2 className="h-4 w-4" /> تم التغيير
                 </span>
               )}
@@ -160,6 +197,8 @@ export default function ProfilePage() {
           </form>
         </CardContent>
       </Card>
+
+      </div>
     </div>
   )
 }
