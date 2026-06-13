@@ -66,8 +66,52 @@ export class QuotaEnforcerService implements OnModuleInit {
   private async syncAndEnforce(): Promise<void> {
     await this.expireOldTopups().catch(e => this.logger.error(e));
     await this.syncAllUsage();
+    await this.disconnectExpired().catch(e => this.logger.error(e));
     await this.enforce();
     await this.voucherCardsService.activateFirstUseCards().catch(e => this.logger.error(e));
+  }
+
+  /**
+   * Kick any active session whose subscription has expired
+   * (start_date + duration_days < NOW). FreeRADIUS's `expiration` module
+   * already blocks the next login attempt — this loop terminates the
+   * currently-open session so the user drops immediately instead of
+   * staying connected until the NAS times out.
+   */
+  private async disconnectExpired(): Promise<void> {
+    // Join on tenant_id too — same username under another tenant must NOT be
+    // considered the same subscriber for expiration checks.
+    const rows: { username: string; nasipaddress: string; framedipaddress: string | null; tenant_id: number | null }[] =
+      await this.dataSource.query(`
+        SELECT ra.username, ra.nasipaddress, ra.framedipaddress, ra.tenant_id
+        FROM radacct ra
+        JOIN user_profiles up
+          ON up.username = ra.username
+         AND COALESCE(up.tenant_id, -1) = COALESCE(ra.tenant_id, -1)
+        WHERE ra.acctstoptime IS NULL
+          AND up.is_archived  = false
+          AND up.is_suspended = false
+          AND (
+            ra.acctupdatetime > NOW() - INTERVAL '10 minutes'
+            OR (ra.acctupdatetime IS NULL AND ra.acctstarttime > NOW() - INTERVAL '10 minutes')
+          )
+          AND (up.start_date::date + up.duration_days * INTERVAL '1 day') < NOW()
+      `);
+    if (!rows.length) return;
+
+    for (const r of rows) {
+      // Lookup NAS within the session's tenant when known — duplicate IPs across
+      // tenants would otherwise resolve to the wrong secret.
+      const nas = await this.nasRepo.findOne({
+        where: r.tenant_id
+          ? { nasname: r.nasipaddress, tenantId: r.tenant_id }
+          : { nasname: r.nasipaddress },
+      });
+      if (!nas?.secret) continue;
+      const attrs = `User-Name=${r.username}\n` + (r.framedipaddress ? `Framed-IP-Address=${r.framedipaddress}\n` : '');
+      const sent = await this.sendPacket('disconnect', r.nasipaddress, nas.secret, attrs).catch(() => 'noreply');
+      this.logger.log(`Expired subscription kicked: ${r.username} (tenant=${r.tenant_id ?? '-'}) from ${r.nasipaddress} → ${sent}`);
+    }
   }
 
   /** Remove topups past their expires_at — bonus pools shrink and rows disappear */
@@ -131,6 +175,7 @@ export class QuotaEnforcerService implements OnModuleInit {
         AND COALESCE(ra.tenant_id, -1) = COALESCE(up.tenant_id, -1)
       LEFT JOIN user_data_usage u2 ON u2.username = up.username
         AND COALESCE(u2.tenant_id,-1) = COALESCE(up.tenant_id,-1)
+      WHERE up.is_archived = false
       GROUP BY up.username, up.tenant_id, u2.quota_baseline_out_bytes, u2.quota_baseline_in_bytes
       ON CONFLICT (username, COALESCE(tenant_id, -1)) DO UPDATE SET
         total_download_bytes = EXCLUDED.total_download_bytes,
@@ -177,6 +222,8 @@ export class QuotaEnforcerService implements OnModuleInit {
         AND (up.tenant_id = u.tenant_id OR (up.tenant_id IS NULL AND u.tenant_id IS NULL))
       JOIN plans p ON p.id = up.plan_id
       WHERE p.quota_action != 'none'
+        AND up.is_archived  = false
+        AND up.is_suspended = false
         AND (
           (p.total_limit_gb IS NOT NULL AND p.total_limit_gb > 0
             AND (u.total_download_bytes + u.total_upload_bytes) >= (p.total_limit_gb * 1024 * 1024 * 1024 + COALESCE(up.bonus_remaining_bytes,0)))
@@ -203,7 +250,7 @@ export class QuotaEnforcerService implements OnModuleInit {
 
         if (plan.quotaAction === 'disconnect') {
           await this.blockAuth(row.username, row.tenant_id);
-          await this.kickUser(row.username);
+          await this.kickUser(row.username, row.tenant_id);
           try { require('fs').appendFileSync('/tmp/quota-enforce.log', `  → blocked + kicked ${row.username}\n`); } catch {}
         } else if (plan.quotaAction === 'switch' && plan.fallbackPlanId) {
           await this.switchPlan(row.username, row.tenant_id, profile, plan.fallbackPlanId);
@@ -253,14 +300,14 @@ export class QuotaEnforcerService implements OnModuleInit {
           [row.code],
         );
         await this.dataSource.query(
-          `DELETE FROM radcheck WHERE username = $1`,
-          [row.code],
+          `DELETE FROM radcheck WHERE username = $1 AND COALESCE(tenant_id,-1) = COALESCE($2,-1)`,
+          [row.code, row.tenant_id],
         );
         await this.dataSource.query(
-          `DELETE FROM radusergroup WHERE username = $1`,
-          [row.code],
+          `DELETE FROM radusergroup WHERE username = $1 AND COALESCE(tenant_id,-1) = COALESCE($2,-1)`,
+          [row.code, row.tenant_id],
         );
-        await this.kickUser(row.code);
+        await this.kickUser(row.code, row.tenant_id);
       }
     }
   }
@@ -296,7 +343,7 @@ export class QuotaEnforcerService implements OnModuleInit {
       .map(a => ({ ...a, op: ':=' }));
     if (checkAttrs.length) await this.radCheckRepo.save(checkAttrs);
 
-    await this.sendCoA(username, fallback);
+    await this.sendCoA(username, fallback, 0n, tenantId);
     this.logger.log(`Switched ${username} to fallback plan: ${fallback.name}`);
   }
 
@@ -421,15 +468,17 @@ export class QuotaEnforcerService implements OnModuleInit {
 
   // ── CoA / Disconnect ──────────────────────────────────────────────────────
 
-  async sendCoAForPlan(username: string, plan: Plan, bonusBytes: bigint = 0n): Promise<void> {
-    return this.sendCoA(username, plan, bonusBytes);
+  async sendCoAForPlan(username: string, plan: Plan, bonusBytes: bigint = 0n, tenantId?: number | null): Promise<void> {
+    return this.sendCoA(username, plan, bonusBytes, tenantId);
   }
 
-  private async sendCoA(username: string, plan: Plan, bonusBytes: bigint = 0n): Promise<void> {
+  private async sendCoA(username: string, plan: Plan, bonusBytes: bigint = 0n, tenantId?: number | null): Promise<void> {
     const rows = await this.dataSource.query(
-      `SELECT nasipaddress, framedipaddress, acctsessionid FROM radacct
-       WHERE username = $1 AND acctstoptime IS NULL ORDER BY acctstarttime DESC LIMIT 1`,
-      [username],
+      `SELECT nasipaddress, framedipaddress, acctsessionid, tenant_id FROM radacct
+       WHERE username = $1 AND acctstoptime IS NULL
+         AND COALESCE(tenant_id,-1) = COALESCE($2,-1)
+       ORDER BY acctstarttime DESC LIMIT 1`,
+      [username, tenantId ?? null],
     );
     if (!rows.length) {
       this.logger.warn(`CoA skipped: no active session for ${username}`);
@@ -439,13 +488,14 @@ export class QuotaEnforcerService implements OnModuleInit {
     const nasIp    = String(rows[0].nasipaddress).split('/')[0];
     const framedIp = String(rows[0].framedipaddress).split('/')[0];
     const sessionId = rows[0].acctsessionid;
+    const sessionTenant = rows[0].tenant_id as number | null;
 
     const attrs = this.buildAttrs(plan, null, username, bonusBytes);
     const attrLines = attrs.map(a => `${a.attribute} ${a.op} "${a.value}"`).join('\n');
     const pkt = `User-Name = "${username}"\nAcct-Session-Id = "${sessionId}"\nFramed-IP-Address = ${framedIp}${attrLines ? '\n' + attrLines : ''}`;
 
     this.logger.log(`CoA → ${username} @ ${nasIp} (${attrs.length} attrs): ${attrs.map(a => `${a.attribute}=${a.value}`).join(', ')}`);
-    for (const { ip, secret } of await this.nasCandidates(nasIp)) {
+    for (const { ip, secret } of await this.nasCandidates(nasIp, sessionTenant)) {
       const result = await this.sendPacket('coa', ip, secret, pkt);
       this.logger.log(`CoA result for ${username} @ ${ip}: ${result}`);
       if (result === 'ack') return;
@@ -453,31 +503,34 @@ export class QuotaEnforcerService implements OnModuleInit {
     this.logger.warn(`CoA failed for ${username}: no ACK from any NAS`);
   }
 
-  async kickUser(username: string): Promise<void> {
+  async kickUser(username: string, tenantId?: number | null): Promise<void> {
     const rows = await this.dataSource.query(
-      `SELECT nasipaddress, framedipaddress, acctsessionid FROM radacct
-       WHERE username = $1 AND acctstoptime IS NULL ORDER BY acctstarttime DESC LIMIT 1`,
-      [username],
+      `SELECT nasipaddress, framedipaddress, acctsessionid, tenant_id FROM radacct
+       WHERE username = $1 AND acctstoptime IS NULL
+         AND COALESCE(tenant_id,-1) = COALESCE($2,-1)
+       ORDER BY acctstarttime DESC LIMIT 1`,
+      [username, tenantId ?? null],
     );
     if (!rows.length) return;
 
     const nasIp    = String(rows[0].nasipaddress).split('/')[0];
     const framedIp = String(rows[0].framedipaddress).split('/')[0];
+    const sessionTenant = rows[0].tenant_id as number | null;
 
     const attrSets = [
       `User-Name = "${username}"\nFramed-IP-Address = ${framedIp}`,
       `Framed-IP-Address = ${framedIp}`,
     ];
 
-    for (const { ip, secret } of await this.nasCandidates(nasIp)) {
+    for (const { ip, secret } of await this.nasCandidates(nasIp, sessionTenant)) {
       for (const attrs of attrSets) {
         if (await this.sendPacket('disconnect', ip, secret, attrs) === 'ack') return;
       }
     }
   }
 
-  private async nasCandidates(sessionNasIp: string) {
-    const allNas = await this.nasRepo.find();
+  private async nasCandidates(sessionNasIp: string, tenantId?: number | null) {
+    const allNas = await this.nasRepo.find(tenantId ? { where: { tenantId } } : undefined);
     const seen = new Set<string>();
     const list: { ip: string; secret: string }[] = [];
     const add = (ip: string, secret: string) => {

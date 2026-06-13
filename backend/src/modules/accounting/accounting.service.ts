@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, IsNull, Not, FindOptionsWhere, DataSource } from 'typeorm';
 import { RadAcct } from '../../database/entities/radacct.entity';
@@ -27,7 +27,9 @@ const ACTIVE_CONDITION = `
 `;
 
 @Injectable()
-export class AccountingService {
+export class AccountingService implements OnModuleInit {
+  private readonly logger = new Logger(AccountingService.name);
+
   constructor(
     @InjectRepository(RadAcct)
     private readonly radAcctRepo: Repository<RadAcct>,
@@ -35,6 +37,50 @@ export class AccountingService {
     private readonly radPostAuthRepo: Repository<RadPostAuth>,
     private readonly dataSource: DataSource,
   ) {}
+
+  /** Start the periodic auto-purge sweep. Runs every 5 minutes so hour-level
+   *  intervals stay accurate to within ~5 min — the underlying SELECT is a
+   *  trivial scan of `tenants` so the extra cadence is cheap. */
+  onModuleInit(): void {
+    const FIVE_MIN = 5 * 60 * 1000;
+    setInterval(() => this.runAutoPurgeSweep().catch(e => this.logger.error(`auto-purge sweep failed: ${e?.message ?? e}`)), FIVE_MIN);
+    // First sweep shortly after boot so newly-due tenants don't wait.
+    setTimeout(() => this.runAutoPurgeSweep().catch(() => {}), 30_000);
+  }
+
+  private async runAutoPurgeSweep(): Promise<void> {
+    // Compare last purge with NOW() minus (value * unit). The unit column is
+    // either 'hours' or 'days' — anything else falls back to days so a bad
+    // value can't disable the feature silently.
+    const due: { id: number; value: number; unit: string }[] = await this.dataSource.query(`
+      SELECT id,
+             auth_log_auto_purge_days AS value,
+             auth_log_auto_purge_unit AS unit
+        FROM tenants
+       WHERE auth_log_auto_purge_enabled = true
+         AND auth_log_auto_purge_days IS NOT NULL
+         AND auth_log_auto_purge_days > 0
+         AND (
+           auth_log_last_purge_at IS NULL
+           OR auth_log_last_purge_at < NOW() - (auth_log_auto_purge_days *
+                CASE WHEN auth_log_auto_purge_unit = 'hours'
+                     THEN INTERVAL '1 hour'
+                     ELSE INTERVAL '1 day'
+                END)
+         )
+    `);
+    for (const t of due) {
+      const result = await this.dataSource.query(
+        `DELETE FROM radpostauth WHERE tenant_id = $1`,
+        [t.id],
+      );
+      await this.dataSource.query(
+        `UPDATE tenants SET auth_log_last_purge_at = NOW() WHERE id = $1`,
+        [t.id],
+      );
+      this.logger.log(`auto-purged ${result[1] ?? 0} auth logs for tenant ${t.id} (interval ${t.value} ${t.unit})`);
+    }
+  }
 
   // FreeRADIUS writes radacct with tenant_id = NULL always.
   // We resolve tenant ownership via user_profiles.
@@ -48,10 +94,19 @@ export class AccountingService {
     const tenantFilter = this.tenantUsernames(tenantId);
 
     if (active === true) {
-      // One row per user: latest TRULY active session only (NAS interim updates still arriving)
+      // One row per user: latest TRULY active session only (NAS interim updates still arriving).
+      // LEFT JOIN user_profiles for the subscriber's real name, and nas for the
+      // network's friendly shortname (so the UI shows "DeltaGroup" instead of a bare IP).
       return this.dataSource.query(`
-        SELECT DISTINCT ON (ra.username) ra.*
+        SELECT DISTINCT ON (ra.username)
+               ra.*,
+               up.first_name AS subscriber_name,
+               n.shortname   AS network_name
         FROM radacct ra
+        LEFT JOIN user_profiles up
+          ON up.username = ra.username
+         AND COALESCE(up.tenant_id, -1) = COALESCE(ra.tenant_id, -1)
+        LEFT JOIN nas n ON n.nasname = host(ra.nasipaddress)
         WHERE ${ACTIVE_CONDITION} ${tenantFilter}
         ORDER BY ra.username, ra.acctstarttime DESC
       `);
@@ -88,13 +143,42 @@ export class AccountingService {
     return { closed: result[1] ?? 0 };
   }
 
-  findAuthLogs(user: AdminUser) {
+  async findAuthLogs(user: AdminUser) {
     const tenantId = getTenantId(user);
-    return this.radPostAuthRepo.find({
-      where: tenantId ? { tenantId } : {},
-      order: { authDate: 'DESC' },
-      take: 200,
-    });
+    const tenantClause = tenantId ? `pa.tenant_id = ${tenantId}` : '1=1';
+    // Resolve subscriber name (first_name) and network name (nas.shortname)
+    // in one query so the UI shows a human-readable row instead of MAC + IP.
+    // Hide rejects whose obvious cause is already visible elsewhere — when the
+    // profile exists and is currently expired/suspended/archived. Rejects for
+    // unknown users (no profile) or active users (wrong password, connection
+    // mismatch, …) stay visible because those are the real signal.
+    return this.dataSource.query(`
+      SELECT pa.id,
+             pa.username,
+             pa.reply,
+             pa.authdate                                AS "authDate",
+             pa.nasipaddress                            AS "nasIpAddress",
+             pa.reply_message                           AS "replyMessage",
+             up.first_name                              AS "subscriberName",
+             n.shortname                                AS "networkName"
+        FROM radpostauth pa
+        LEFT JOIN user_profiles up
+          ON up.username = pa.username
+         AND COALESCE(up.tenant_id, -1) = COALESCE(pa.tenant_id, -1)
+        LEFT JOIN nas n ON n.nasname = pa.nasipaddress
+       WHERE ${tenantClause}
+         AND NOT (
+           pa.reply = 'Access-Reject'
+           AND up.username IS NOT NULL
+           AND (
+             up.is_suspended = true
+             OR up.is_archived = true
+             OR (up.start_date + (up.duration_days || ' days')::interval < NOW())
+           )
+         )
+       ORDER BY pa.authdate DESC
+       LIMIT 200
+    `);
   }
 
   /** Return a list of months that have auth logs, with row counts */
@@ -122,6 +206,64 @@ export class AccountingService {
       WHERE to_char(authdate, 'YYYY-MM') = $1 ${tenantClause}
     `, [month]);
     return { deleted: result[1] ?? 0 };
+  }
+
+  /** Manual full wipe of every auth log for the calling tenant. */
+  async deleteAllAuthLogs(user: AdminUser): Promise<{ deleted: number }> {
+    const tenantId = getTenantId(user);
+    const tenantClause = tenantId ? `WHERE tenant_id = ${tenantId}` : '';
+    const result = await this.dataSource.query(`DELETE FROM radpostauth ${tenantClause}`);
+    if (tenantId) {
+      await this.dataSource.query(
+        `UPDATE tenants SET auth_log_last_purge_at = NOW() WHERE id = $1`,
+        [tenantId],
+      );
+    }
+    return { deleted: result[1] ?? 0 };
+  }
+
+  async getAuthLogAutoPurge(user: AdminUser): Promise<{ enabled: boolean; days: number | null; unit: 'days' | 'hours'; lastPurgeAt: string | null }> {
+    const tenantId = getTenantId(user);
+    if (!tenantId) return { enabled: false, days: null, unit: 'days', lastPurgeAt: null };
+    const rows = await this.dataSource.query(
+      `SELECT auth_log_auto_purge_enabled AS enabled,
+              auth_log_auto_purge_days    AS days,
+              auth_log_auto_purge_unit    AS unit,
+              auth_log_last_purge_at      AS "lastPurgeAt"
+         FROM tenants WHERE id = $1`,
+      [tenantId],
+    );
+    const r = rows[0] ?? {};
+    return {
+      enabled: !!r.enabled,
+      days: r.days ?? null,
+      unit: r.unit === 'hours' ? 'hours' : 'days',
+      lastPurgeAt: r.lastPurgeAt ? new Date(r.lastPurgeAt).toISOString() : null,
+    };
+  }
+
+  async setAuthLogAutoPurge(
+    user: AdminUser,
+    dto: { enabled: boolean; days?: number | null; unit?: 'days' | 'hours' },
+  ): Promise<{ enabled: boolean; days: number | null; unit: 'days' | 'hours' }> {
+    const tenantId = getTenantId(user);
+    if (!tenantId) throw new Error('Tenant scope required');
+    const days = dto.enabled
+      ? (typeof dto.days === 'number' && dto.days > 0 ? Math.floor(dto.days) : null)
+      : null;
+    if (dto.enabled && !days) {
+      throw new Error('Value must be a positive integer when enabling auto-purge');
+    }
+    const unit: 'days' | 'hours' = dto.unit === 'hours' ? 'hours' : 'days';
+    await this.dataSource.query(
+      `UPDATE tenants
+          SET auth_log_auto_purge_enabled = $1,
+              auth_log_auto_purge_days    = $2,
+              auth_log_auto_purge_unit    = $3
+        WHERE id = $4`,
+      [dto.enabled, days, unit, tenantId],
+    );
+    return { enabled: dto.enabled, days, unit };
   }
 
   async stats(user: AdminUser) {

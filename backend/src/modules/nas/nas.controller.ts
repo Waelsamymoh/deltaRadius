@@ -1,12 +1,14 @@
 import {
   Controller, Get, Post, Patch, Delete,
-  Param, Body, ParseIntPipe, UseGuards, Res, Req,
+  Param, Body, ParseIntPipe, UseGuards, Res, Req, Query,
 } from '@nestjs/common';
 import type { Response, Request } from 'express';
 import { NasService } from './nas.service';
 import { CreateNasDto } from './dto/create-nas.dto';
 import { UpdateNasDto } from './dto/update-nas.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
+import { RequirePermissions } from '../../common/decorators/permissions.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AdminUser } from '../../database/entities/admin-user.entity';
 
@@ -26,9 +28,10 @@ export class PublicNasController {
     @Param('id', ParseIntPipe) id: number,
     @Param('token') token: string,
     @Res() res: Response,
+    @Query('ros') ros?: string,
   ) {
     const nas = await this.nasService.findByIdWithToken(id, token);
-    const script = this.nasService.buildMikrotikScript(nas);
+    const script = await this.nasService.buildMikrotikScript(nas, ros ? +ros : 6);
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
     res.send(script);
@@ -36,13 +39,17 @@ export class PublicNasController {
 }
 
 @Controller('nas')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
+@RequirePermissions('nas.manage')
 export class NasController {
   constructor(private readonly nasService: NasService) {}
 
   @Get()
-  findAll(@CurrentUser() user: AdminUser) {
-    return this.nasService.findAll(user);
+  findAll(
+    @CurrentUser() user: AdminUser,
+    @Query('tenantId') tenantId?: string,
+  ) {
+    return this.nasService.findAll(user, tenantId ? +tenantId : undefined);
   }
 
   @Get(':id')
@@ -51,8 +58,12 @@ export class NasController {
   }
 
   @Post()
-  create(@Body() dto: CreateNasDto, @CurrentUser() user: AdminUser) {
-    return this.nasService.create(dto, user);
+  create(
+    @Body() dto: CreateNasDto,
+    @CurrentUser() user: AdminUser,
+    @Query('tenantId') tenantId?: string,
+  ) {
+    return this.nasService.create(dto, user, tenantId ? +tenantId : undefined);
   }
 
   @Get(':id/check')
@@ -65,12 +76,14 @@ export class NasController {
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser() user: AdminUser,
     @Res() res: Response,
+    @Query('ros') ros?: string,
   ) {
     const nas = await this.nasService.findOne(id, user);
-    const script = this.nasService.buildMikrotikScript(nas);
+    const v = ros ? +ros : 6;
+    const script = await this.nasService.buildMikrotikScript(nas, v);
     const slug = (nas.shortname || nas.nasname || `nas-${id}`).replace(/[^a-z0-9._-]/gi, '-');
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="mikrotik-${slug}.rsc"`);
+    res.setHeader('Content-Disposition', `attachment; filename="mikrotik-${slug}${v >= 7 ? '-ros7' : ''}.rsc"`);
     res.send(script);
   }
 
@@ -79,9 +92,10 @@ export class NasController {
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser() user: AdminUser,
     @Req() req: Request,
+    @Query('ros') ros?: string,
   ) {
     const nas = await this.nasService.findOne(id, user);
-    const script = this.nasService.buildMikrotikScript(nas);
+    const script = await this.nasService.buildMikrotikScript(nas, ros ? +ros : 6);
     // Prefer the proxied scheme/host so the URL matches whatever the user is on
     const proto = (req.headers['x-forwarded-proto'] as string)?.split(',')[0]?.trim() || req.protocol;
     const host  = (req.headers['x-forwarded-host'] as string) || req.get('host') || 'localhost';

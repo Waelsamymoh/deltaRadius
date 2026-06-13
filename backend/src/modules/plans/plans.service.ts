@@ -1,10 +1,10 @@
-import { Injectable, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, FindOptionsWhere } from 'typeorm';
 import { Plan } from '../../database/entities/plan.entity';
 import { RadGroupReply } from '../../database/entities/radgroupreply.entity';
 import { AdminUser } from '../../database/entities/admin-user.entity';
-import { getTenantId } from '../../common/helpers/tenant.helper';
+import { getTenantId, getScopedTenantId } from '../../common/helpers/tenant.helper';
 import { CreatePlanDto } from './dto/create-plan.dto';
 import { UpdatePlanDto } from './dto/update-plan.dto';
 import { QuotaEnforcerService } from '../quota/quota-enforcer.service';
@@ -26,8 +26,8 @@ export class PlansService {
     return (tenantId ? { tenantId } : {}) as FindOptionsWhere<Plan>;
   }
 
-  findAll(user: AdminUser) {
-    const tenantId = getTenantId(user);
+  findAll(user: AdminUser, overrideTenantId?: number) {
+    const tenantId = getScopedTenantId(user, overrideTenantId);
     return this.planRepo.find({ where: this.w(tenantId), order: { name: 'ASC' } });
   }
 
@@ -39,8 +39,11 @@ export class PlansService {
     return plan;
   }
 
-  async create(dto: CreatePlanDto, user: AdminUser) {
-    const tenantId = getTenantId(user);
+  async create(dto: CreatePlanDto, user: AdminUser, overrideTenantId?: number) {
+    const tenantId = getScopedTenantId(user, overrideTenantId);
+    if (tenantId === null) {
+      throw new BadRequestException('يجب تحديد العميل (tenantId) قبل إنشاء خطة');
+    }
     const plan = this.planRepo.create({ ...dto, tenantId });
     const saved = await this.planRepo.save(plan);
     await this.syncGroupReply(saved, tenantId);
@@ -78,28 +81,32 @@ export class PlansService {
   private async pushCoaToActivePlanUsers(plan: Plan, tenantId: number | null): Promise<void> {
     const tenantFilterUp = tenantId ? `AND up.tenant_id = ${tenantId}` : '';
     const tenantFilterVc = tenantId ? `AND vc.tenant_id = ${tenantId}` : '';
-    const rows: { username: string; is_card: boolean }[] = await this.dataSource.query(`
-      SELECT DISTINCT up.username, false AS is_card
+    const rows: { username: string; tenant_id: number | null; is_card: boolean }[] = await this.dataSource.query(`
+      SELECT DISTINCT up.username, up.tenant_id, false AS is_card
       FROM user_profiles up
-      JOIN radacct ra ON ra.username = up.username AND ra.acctstoptime IS NULL
+      JOIN radacct ra ON ra.username = up.username
+        AND COALESCE(ra.tenant_id,-1) = COALESCE(up.tenant_id,-1)
+        AND ra.acctstoptime IS NULL
       WHERE up.plan_id = $1 ${tenantFilterUp}
       UNION
-      SELECT DISTINCT vc.code AS username, true AS is_card
+      SELECT DISTINCT vc.code AS username, vc.tenant_id, true AS is_card
       FROM voucher_cards vc
-      JOIN radacct ra ON ra.username = vc.code AND ra.acctstoptime IS NULL
+      JOIN radacct ra ON ra.username = vc.code
+        AND COALESCE(ra.tenant_id,-1) = COALESCE(vc.tenant_id,-1)
+        AND ra.acctstoptime IS NULL
       WHERE vc.plan_id = $1 ${tenantFilterVc}
     `, [plan.id]);
 
     this.logger.log(`Plan '${plan.name}' updated — processing ${rows.length} active user(s)`);
-    for (const { username, is_card } of rows) {
+    for (const { username, tenant_id, is_card } of rows) {
       try {
         if (is_card) {
           // Quota attributes (Mikrotik-Recv/Xmit-Limit) are auth-only in MikroTik.
           // Kick the card so it re-auths and picks up the new radgroupreply limits.
-          await this.quotaEnforcer.kickUser(username);
+          await this.quotaEnforcer.kickUser(username, tenant_id);
           this.logger.log(`Kicked card ${username} to re-auth with new plan limits`);
         } else {
-          await this.quotaEnforcer.sendCoAForPlan(username, plan);
+          await this.quotaEnforcer.sendCoAForPlan(username, plan, 0n, tenant_id);
         }
       } catch (e) {
         this.logger.error(`Plan update action failed for ${username}: ${e}`);

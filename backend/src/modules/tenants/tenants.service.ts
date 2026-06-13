@@ -11,6 +11,9 @@ import { Nas } from '../../database/entities/nas.entity';
 import { RadCheck } from '../../database/entities/radcheck.entity';
 import { RadAcct } from '../../database/entities/radacct.entity';
 import { Plan } from '../../database/entities/plan.entity';
+import { UserProfile } from '../../database/entities/user-profile.entity';
+import { VoucherCard } from '../../database/entities/voucher-card.entity';
+import { TopupPackage } from '../../database/entities/topup-package.entity';
 import { CreateTenantDto } from './dto/create-tenant.dto';
 import { UpdateTenantDto } from './dto/update-tenant.dto';
 
@@ -32,6 +35,12 @@ export class TenantsService {
     private readonly radAcctRepo: Repository<RadAcct>,
     @InjectRepository(Plan)
     private readonly planRepo: Repository<Plan>,
+    @InjectRepository(UserProfile)
+    private readonly userProfileRepo: Repository<UserProfile>,
+    @InjectRepository(VoucherCard)
+    private readonly voucherRepo: Repository<VoucherCard>,
+    @InjectRepository(TopupPackage)
+    private readonly topupPackageRepo: Repository<TopupPackage>,
   ) {}
 
   async findAll(includeArchived = false) {
@@ -68,6 +77,28 @@ export class TenantsService {
     const tenant = await this.tenantRepo.findOne({ where: { id } });
     if (!tenant) throw new NotFoundException(`Tenant ${id} not found`);
     return tenant;
+  }
+
+  /** Tenant-scoped settings used by the admin UI. Currently exposes the
+   *  default expiry time-of-day used by FreeRADIUS on renewal. */
+  async getSettings(tenantId: number) {
+    const t = await this.tenantRepo.findOne({ where: { id: tenantId } });
+    if (!t) throw new NotFoundException('Tenant not found');
+    return { defaultExpiryTime: t.defaultExpiryTime ?? '12:00' };
+  }
+
+  async updateSettings(tenantId: number, dto: { defaultExpiryTime?: string }) {
+    const t = await this.tenantRepo.findOne({ where: { id: tenantId } });
+    if (!t) throw new NotFoundException('Tenant not found');
+    if (dto.defaultExpiryTime !== undefined) {
+      // Validate HH:MM (24h)
+      if (!/^([01]?\d|2[0-3]):[0-5]\d$/.test(dto.defaultExpiryTime)) {
+        throw new ConflictException('صيغة الوقت غير صحيحة (HH:MM)');
+      }
+      t.defaultExpiryTime = dto.defaultExpiryTime;
+    }
+    await this.tenantRepo.save(t);
+    return { defaultExpiryTime: t.defaultExpiryTime };
   }
 
   async create(dto: CreateTenantDto) {
@@ -145,20 +176,16 @@ export class TenantsService {
   }
 
   /** Summary counts + recent activity for the per-tenant dashboard.
-   *  "Active" = no Acct-Stop received AND interim update arrived within 10 min
-   *  (matches AccountingService.ACTIVE_CONDITION to avoid stuck-session inflation). */
+   *  Each count comes from the canonical table for that resource — never
+   *  from radcheck, which mixes RADIUS users with voucher card rows. */
   async getSummary(id: number) {
     const tenant = await this.findOne(id);
-    const [userCount, nasCount, planCount, activeSessions, totalSessions] = await Promise.all([
-      this.radCheckRepo
-        .createQueryBuilder('rc')
-        .where('rc.tenant_id = :id', { id })
-        .andWhere(`rc.attribute IN ('Cleartext-Password', 'Auth-Type')`)
-        .select('COUNT(DISTINCT rc.username)', 'count')
-        .getRawOne<{ count: string }>()
-        .then(r => parseInt(r?.count || '0', 10)),
+    const [users, nas, plans, cards, topups, activeSessions, totalSessions] = await Promise.all([
+      this.userProfileRepo.count({ where: { tenantId: id } as any }),
       this.nasRepo.count({ where: { tenantId: id } }),
       this.planRepo.count({ where: { tenantId: id } as any }),
+      this.voucherRepo.count({ where: { tenantId: id } as any }),
+      this.topupPackageRepo.count({ where: { tenantId: id } as any }),
       this.radAcctRepo
         .createQueryBuilder('ra')
         .where('ra.tenant_id = :id', { id })
@@ -172,13 +199,7 @@ export class TenantsService {
     ]);
     return {
       tenant,
-      counts: {
-        users: userCount,
-        nas: nasCount,
-        plans: planCount,
-        activeSessions,
-        totalSessions,
-      },
+      counts: { users, nas, plans, cards, topups, activeSessions, totalSessions },
     };
   }
 

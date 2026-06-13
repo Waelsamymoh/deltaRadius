@@ -1,4 +1,4 @@
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import {
@@ -55,6 +55,25 @@ type Stats = {
     durationSec: number
     terminateCause: string | null
   }[]
+  cycles: {
+    label: string
+    startsAt: string | null
+    endsAt:   string | null
+    planName: string | null
+    daysRenewed: number | null
+    totalDownloadBytes: number
+    totalUploadBytes: number
+    sessions: {
+      startTime: string
+      stopTime: string | null
+      ip: string
+      nasIp: string
+      uploadBytes: number
+      downloadBytes: number
+      durationSec: number
+      terminateCause: string | null
+    }[]
+  }[]
 }
 
 const fmtBytes = (bytes: number): string => {
@@ -76,15 +95,27 @@ const fmtDuration = (sec: number): string => {
 const fmtDate = (d: string | null) =>
   d ? new Date(d).toLocaleString('ar-EG', { dateStyle: 'short', timeStyle: 'short' }) : '—'
 
-function UsageBar({ used, total, color }: { used: number; total: number; color: string }) {
-  const pct = total > 0 ? Math.min(100, (used / total) * 100) : 0
-  // Show warning/danger colors when nearing/at limit (overrides base color)
-  const visualColor = pct >= 100 ? 'bg-destructive' : pct >= 80 ? 'bg-yellow-500' : color
+// Map the Tailwind class names callers pass to concrete hex values. Inline
+// styles are used because dynamic `bg-*` classes get purged from the build.
+const BAR_HEX: Record<string, string> = {
+  'bg-blue-500':   '#3b82f6',
+  'bg-orange-500': '#f97316',
+  'bg-purple-500': '#a855f7',
+  'bg-green-500':  '#10b981',
+  'bg-cyan-500':   '#06b6d4',
+}
+/** Fills with the REMAINING amount (full bar = lots left) to match the
+ *  "الكمية المتبقية" cards. Color: caller's color when healthy, yellow when
+ *  under 20% left, red when exhausted. */
+function UsageBar({ remaining, total, color }: { remaining: number; total: number; color: string }) {
+  const pct = total > 0 ? Math.min(100, Math.max(0, (remaining / total) * 100)) : 0
+  const ratio = total > 0 ? remaining / total : 0
+  const fill = remaining <= 0 ? '#ef4444' : ratio < 0.2 ? '#eab308' : (BAR_HEX[color] ?? '#3b82f6')
   return (
-    <div className="w-full bg-muted rounded-full h-2">
+    <div className="w-full rounded-full h-2" style={{ backgroundColor: '#e5e7eb' }}>
       <div
-        className={`h-2 rounded-full transition-all ${visualColor}`}
-        style={{ width: `${pct}%` }}
+        className="h-2 rounded-full transition-all"
+        style={{ width: `${pct}%`, backgroundColor: fill }}
       />
     </div>
   )
@@ -95,20 +126,54 @@ export default function UserDetailPage() {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const [kickMsg, setKickMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [expandedCycles, setExpandedCycles] = useState<Set<number>>(new Set())
+  const [confirmClearSessions, setConfirmClearSessions] = useState(false)
+  const [adjustGb, setAdjustGb] = useState('')
+  const [adjustMsg, setAdjustMsg] = useState<string | null>(null)
+  const toggleCycle = (i: number) => setExpandedCycles(prev => {
+    const next = new Set(prev)
+    if (next.has(i)) next.delete(i)
+    else next.add(i)
+    return next
+  })
+
+  // Owner navigates here from /users?tenant=X — preserve scope so stats/kick
+  // act on the right tenant when the same username exists for other tenants.
+  const [searchParams] = useSearchParams()
+  const tenantId = searchParams.get('tenant') ? Number(searchParams.get('tenant')) : null
 
   const kickMutation = useMutation({
-    mutationFn: () => usersApi.kick(username!),
+    mutationFn: () => usersApi.kick(username!, tenantId),
     onSuccess: (res) => {
       setKickMsg({ ok: res.data.kicked, text: res.data.message })
-      if (res.data.kicked) qc.invalidateQueries({ queryKey: ['user-stats', username] })
+      if (res.data.kicked) qc.invalidateQueries({ queryKey: ['user-stats', username, tenantId] })
       setTimeout(() => setKickMsg(null), 4000)
     },
     onError: () => setKickMsg({ ok: false, text: 'حدث خطأ أثناء الطرد' }),
   })
 
+  const clearSessionsMutation = useMutation({
+    mutationFn: () => usersApi.clearSessions(username!, tenantId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['user-stats', username, tenantId] })
+      setConfirmClearSessions(false)
+    },
+  })
+
+  const adjustUsageMutation = useMutation({
+    mutationFn: (gb: number) => usersApi.adjustUsage(username!, gb, tenantId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['user-stats', username, tenantId] })
+      setAdjustMsg('تم التعديل')
+      setAdjustGb('')
+      setTimeout(() => setAdjustMsg(null), 2500)
+    },
+    onError: (err: any) => setAdjustMsg(err?.response?.data?.message ?? 'حدث خطأ'),
+  })
+
   const { data: stats, isLoading, error } = useQuery<Stats>({
-    queryKey: ['user-stats', username],
-    queryFn: () => usersApi.stats(username!).then(r => r.data),
+    queryKey: ['user-stats', username, tenantId],
+    queryFn: () => usersApi.stats(username!, tenantId).then(r => r.data),
     refetchInterval: 5_000,
   })
 
@@ -216,7 +281,7 @@ export default function UserDetailPage() {
             {(stats.usage.isTotalQuota ? stats.usage.totalLimitBytes : stats.usage.downloadLimitBytes) && (
               <div className="mt-2">
                 <UsageBar
-                  used={stats.usage.isTotalQuota ? (stats.usage.totalDownloadBytes + stats.usage.totalUploadBytes) : stats.usage.totalDownloadBytes}
+                  remaining={stats.usage.isTotalQuota ? stats.usage.remainingBytes! : stats.usage.remainingDownloadBytes!}
                   total={stats.usage.isTotalQuota ? stats.usage.totalLimitBytes! : stats.usage.downloadLimitBytes!}
                   color="bg-blue-500"
                 />
@@ -248,7 +313,7 @@ export default function UserDetailPage() {
             {stats.usage.uploadLimitBytes && (
               <div className="mt-2">
                 <UsageBar
-                  used={stats.usage.totalUploadBytes}
+                  remaining={stats.usage.remainingUploadBytes!}
                   total={stats.usage.uploadLimitBytes}
                   color="bg-orange-500"
                 />
@@ -281,7 +346,7 @@ export default function UserDetailPage() {
             {stats.bonus.totalBytes > 0 && (
               <div className="mt-2">
                 <UsageBar
-                  used={stats.bonus.usedBytes}
+                  remaining={stats.bonus.remainingBytes}
                   total={stats.bonus.totalBytes}
                   color="bg-purple-500"
                 />
@@ -336,7 +401,17 @@ export default function UserDetailPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2 text-sm">
-              <Row icon={<Wifi className="h-4 w-4" />}     label="IP العميل"  value={stats.activeSession.ip ?? '—'} mono />
+              <Row icon={<Wifi className="h-4 w-4" />}     label="IP العميل"  mono value={stats.activeSession.ip ? (
+                <a
+                  href={`http://${stats.activeSession.ip}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary underline underline-offset-2 hover:text-primary/80"
+                  title="فتح راوتر المشترك في تبويب جديد"
+                >
+                  {stats.activeSession.ip}
+                </a>
+              ) : '—'} />
               <Row icon={<Server className="h-4 w-4" />}   label="IP الـ NAS" value={stats.activeSession.nasIp} mono />
               <Row icon={<Clock className="h-4 w-4" />}    label="مدة الجلسة" value={fmtDuration(stats.activeSession.sessionTime)} />
               <Row icon={<Calendar className="h-4 w-4" />} label="بدأت"       value={fmtDate(stats.activeSession.startTime)} />
@@ -390,50 +465,188 @@ export default function UserDetailPage() {
         </Card>
       </div>
 
-      {/* Sessions table */}
-      {stats.sessions.length > 0 && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm flex items-center gap-2">
-              <Clock className="h-4 w-4" /> آخر الجلسات
-            </CardTitle>
-          </CardHeader>
+      {/* Manual usage adjustment — useful when migrating subscribers from another system */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Download className="h-4 w-4 text-primary" /> تعديل الاستهلاك يدوياً
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <p className="text-xs text-muted-foreground">
+            أضف رقماً (بالجيجابايت) ليُضاف للاستهلاك الحالي ({fmtBytes(stats.usage.totalDownloadBytes)}).
+            استخدم رقماً سالباً للخصم. مثال: <code className="bg-muted px-1 rounded">15</code> → يضيف 15GB للعداد بدون تأثير على الجلسات.
+          </p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <input
+              type="number"
+              step="0.1"
+              value={adjustGb}
+              onChange={e => setAdjustGb(e.target.value)}
+              placeholder="مثال: 15"
+              dir="ltr"
+              className="w-40 border border-input bg-background rounded-md px-3 py-2 text-sm text-center"
+            />
+            <span className="text-sm text-muted-foreground">GB</span>
+            <button
+              onClick={() => {
+                const n = Number(adjustGb)
+                if (!isFinite(n) || n === 0) return
+                adjustUsageMutation.mutate(n)
+              }}
+              disabled={adjustUsageMutation.isPending || !adjustGb || Number(adjustGb) === 0}
+              className="px-4 py-2 text-sm rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {adjustUsageMutation.isPending ? 'جاري الحفظ...' : 'حفظ'}
+            </button>
+            {adjustGb && Number(adjustGb) !== 0 && Number.isFinite(Number(adjustGb)) && (
+              <span className="text-xs text-muted-foreground">
+                الإجمالي الجديد: <strong className="text-foreground">
+                  {fmtBytes(Math.max(0, stats.usage.totalDownloadBytes + Number(adjustGb) * 1024 ** 3))}
+                </strong>
+              </span>
+            )}
+            {adjustMsg && (
+              <span className={`text-xs font-medium ${adjustMsg === 'تم التعديل' ? 'text-emerald-600' : 'text-destructive'}`}>
+                {adjustMsg}
+              </span>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Sessions area: header with "Clear sessions" + collapsible cycles */}
+      {(stats.cycles ?? []).length > 0 && (
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <h3 className="text-base font-bold flex items-center gap-2">
+            <Clock className="h-4 w-4" /> سجل الجلسات
+          </h3>
+          <button
+            onClick={() => setConfirmClearSessions(true)}
+            className="text-xs px-3 py-1.5 rounded-md border border-amber-400/40 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:bg-amber-950/30 dark:text-amber-300 transition"
+          >
+            مسح سجل الجلسات
+          </button>
+        </div>
+      )}
+      {(stats.cycles ?? []).map((cycle, ci) => (
+        <Card key={ci}>
+          <button
+            type="button"
+            onClick={() => toggleCycle(ci)}
+            className="w-full text-right"
+          >
+            <CardHeader className="pb-3 cursor-pointer hover:bg-muted/30 transition rounded-t">
+              <CardTitle className="text-sm flex items-center justify-between flex-wrap gap-2">
+                <span className="flex items-center gap-2">
+                  <span className="text-muted-foreground">{expandedCycles.has(ci) ? '▼' : '◀'}</span>
+                  <Clock className="h-4 w-4" /> {cycle.label}
+                  {cycle.planName && (
+                    <span className="text-xs font-normal text-muted-foreground">— {cycle.planName}</span>
+                  )}
+                  {cycle.startsAt && (
+                    <span className="text-xs font-normal text-muted-foreground">
+                      من {fmtDate(cycle.startsAt)}
+                      {cycle.endsAt && ` حتى ${fmtDate(cycle.endsAt)}`}
+                    </span>
+                  )}
+                </span>
+                <span className="flex items-center gap-3 text-xs font-normal">
+                  <span>{cycle.sessions.length} جلسة</span>
+                  <span>تحميل: <strong className="text-emerald-600">{fmtBytes(cycle.totalDownloadBytes)}</strong></span>
+                  <span>رفع: <strong className="text-blue-600">{fmtBytes(cycle.totalUploadBytes)}</strong></span>
+                  <span>الإجمالي: <strong>{fmtBytes(cycle.totalDownloadBytes + cycle.totalUploadBytes)}</strong></span>
+                </span>
+              </CardTitle>
+            </CardHeader>
+          </button>
+          {expandedCycles.has(ci) && (
           <CardContent>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b">
-                    <th className="text-right py-2 px-2 font-medium text-muted-foreground">البداية</th>
-                    <th className="text-right py-2 px-2 font-medium text-muted-foreground">النهاية</th>
-                    <th className="text-right py-2 px-2 font-medium text-muted-foreground">IP</th>
-                    <th className="text-right py-2 px-2 font-medium text-muted-foreground">المدة</th>
-                    <th className="text-right py-2 px-2 font-medium text-muted-foreground">تحميل</th>
-                    <th className="text-right py-2 px-2 font-medium text-muted-foreground">رفع</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {stats.sessions.map((s, i) => (
-                    <tr key={i} className="border-b hover:bg-muted/30">
-                      <td className="py-1.5 px-2">{fmtDate(s.startTime)}</td>
-                      <td className="py-1.5 px-2">{s.stopTime ? fmtDate(s.stopTime) : <span className="text-green-600 font-medium">نشطة</span>}</td>
-                      <td className="py-1.5 px-2 font-mono">{s.ip ?? '—'}</td>
-                      <td className="py-1.5 px-2">{s.durationSec ? fmtDuration(s.durationSec) : '—'}</td>
-                      <td className="py-1.5 px-2">{fmtBytes(s.downloadBytes)}</td>
-                      <td className="py-1.5 px-2">{fmtBytes(s.uploadBytes)}</td>
+            {cycle.sessions.length === 0 ? (
+              <p className="text-center text-xs text-muted-foreground py-4">لا توجد جلسات في هذه الفترة</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="text-right py-2 px-2 font-medium text-muted-foreground">البداية</th>
+                      <th className="text-right py-2 px-2 font-medium text-muted-foreground">النهاية</th>
+                      <th className="text-right py-2 px-2 font-medium text-muted-foreground">IP</th>
+                      <th className="text-right py-2 px-2 font-medium text-muted-foreground">المدة</th>
+                      <th className="text-right py-2 px-2 font-medium text-muted-foreground">تحميل</th>
+                      <th className="text-right py-2 px-2 font-medium text-muted-foreground">رفع</th>
+                      <th className="text-right py-2 px-2 font-medium text-muted-foreground">إجمالي التحميل</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {cycle.sessions.map((s, i) => {
+                      // Cumulative download up to and including this session
+                      // (sessions are returned newest-first, so we accumulate
+                      // from the bottom of the array).
+                      const cumulativeDownload = cycle.sessions
+                        .slice(i)
+                        .reduce((sum, x) => sum + x.downloadBytes, 0)
+                      return (
+                        <tr key={i} className="border-b hover:bg-muted/30">
+                          <td className="py-1.5 px-2">{fmtDate(s.startTime)}</td>
+                          <td className="py-1.5 px-2">{s.stopTime ? fmtDate(s.stopTime) : <span className="text-green-600 font-medium">نشطة</span>}</td>
+                          <td className="py-1.5 px-2 font-mono">{s.ip ?? '—'}</td>
+                          <td className="py-1.5 px-2">{s.durationSec ? fmtDuration(s.durationSec) : '—'}</td>
+                          <td className="py-1.5 px-2">{fmtBytes(s.downloadBytes)}</td>
+                          <td className="py-1.5 px-2">{fmtBytes(s.uploadBytes)}</td>
+                          <td className="py-1.5 px-2 font-bold text-emerald-700">{fmtBytes(cumulativeDownload)}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </CardContent>
+          )}
         </Card>
+      ))}
+
+      {/* Confirm clear sessions */}
+      {confirmClearSessions && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setConfirmClearSessions(false)}>
+          <div className="bg-background rounded-lg border max-w-md w-full p-5 space-y-3" onClick={e => e.stopPropagation()}>
+            <h3 className="text-lg font-bold">مسح سجل الجلسات</h3>
+            <p className="text-sm text-muted-foreground">
+              سيتم حذف كل سجلات الجلسات لهذا المشترك. <strong className="text-foreground">عداد الاستهلاك لن يتأثر</strong> — البايتات المستهلكة محفوظة في عداد منفصل.
+            </p>
+            <div className="rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-300 p-3 text-xs">
+              <strong>ما يتم حذفه:</strong> تفاصيل كل جلسة (الـ IP، البداية، النهاية، المدة، البايتات لكل جلسة).
+              <br />
+              <strong>ما يظل آمناً:</strong> العداد الكلي للاستهلاك، الفواتير، الباقات، تاريخ التجديد، الخطة، تواريخ الاشتراك.
+            </div>
+            {clearSessionsMutation.isError && (
+              <p className="text-xs text-destructive">
+                {(clearSessionsMutation.error as any)?.response?.data?.message ?? 'حدث خطأ'}
+              </p>
+            )}
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setConfirmClearSessions(false)}
+                className="px-3 py-2 text-sm rounded-md border hover:bg-muted"
+              >إلغاء</button>
+              <button
+                onClick={() => clearSessionsMutation.mutate()}
+                disabled={clearSessionsMutation.isPending}
+                className="px-3 py-2 text-sm rounded-md bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                {clearSessionsMutation.isPending ? 'جاري المسح...' : 'مسح'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
 }
 
 function Row({ icon, label, value, mono, className }: {
-  icon: React.ReactNode; label: string; value: string; mono?: boolean; className?: string
+  icon: React.ReactNode; label: string; value: React.ReactNode; mono?: boolean; className?: string
 }) {
   return (
     <div className="flex items-center gap-2">

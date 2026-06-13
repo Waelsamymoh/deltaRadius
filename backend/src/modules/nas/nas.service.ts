@@ -9,7 +9,7 @@ import { Nas } from '../../database/entities/nas.entity';
 import { AdminUser } from '../../database/entities/admin-user.entity';
 import { CreateNasDto } from './dto/create-nas.dto';
 import { UpdateNasDto } from './dto/update-nas.dto';
-import { getTenantId } from '../../common/helpers/tenant.helper';
+import { getTenantId, getScopedTenantId } from '../../common/helpers/tenant.helper';
 import { TenantsService } from '../tenants/tenants.service';
 
 const execAsync = promisify(exec);
@@ -62,8 +62,8 @@ export class NasService {
     return { url, command };
   }
 
-  private where(user: AdminUser, extra: Partial<Nas> = {}): FindOptionsWhere<Nas> {
-    const tenantId = getTenantId(user);
+  private where(user: AdminUser, extra: Partial<Nas> = {}, overrideTenantId?: number): FindOptionsWhere<Nas> {
+    const tenantId = getScopedTenantId(user, overrideTenantId);
     return tenantId ? { tenantId, ...extra } as FindOptionsWhere<Nas> : extra as FindOptionsWhere<Nas>;
   }
 
@@ -79,8 +79,11 @@ export class NasService {
     return { ...nas, sstpUsername, sstpIp: nas.nasname };
   }
 
-  async findAll(user: AdminUser) {
-    const rows = await this.nasRepo.find({ where: this.where(user), order: { nasname: 'ASC' } });
+  async findAll(user: AdminUser, overrideTenantId?: number) {
+    const rows = await this.nasRepo.find({
+      where: this.where(user, {}, overrideTenantId),
+      order: { nasname: 'ASC' },
+    });
     return rows.map(n => this.enrich(n));
   }
 
@@ -90,25 +93,72 @@ export class NasService {
     return nas;
   }
 
+  private static readonly SSTP_HOST = 'sstp2.delta-group.online';
+  private static readonly SSTP_PORT = 442;
+
+  /** Resolve the SSTP server hostname to an IPv4 (used by the v7 script to
+   *  avoid the on-device DNS lookup that fails with "bad address or dns name"
+   *  on a fresh RouterOS 7 router with no DNS configured). */
+  private async resolveSstpIp(): Promise<string | null> {
+    try {
+      const dns = await import('dns');
+      const addrs = await dns.promises.resolve4(NasService.SSTP_HOST);
+      return addrs[0] ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   /** Build a MikroTik RouterOS script that wires this NAS into DeltaRadius.
    *  Each command is a SINGLE line (no backslash line-continuations) — some
-   *  RouterOS versions choke on multi-line commands when pasted into terminal. */
-  buildMikrotikScript(nas: Nas): string {
-    const username = nas.nasname ? this.tenantsService.findChapUsernameByIp(nas.nasname) : null;
+   *  RouterOS versions choke on multi-line commands when pasted into terminal.
+   *
+   *  `ros` = major RouterOS version. v7 uses the resolved server IP for the SSTP
+   *  client (hostname resolution at add-time fails on a DNS-less v7 device). */
+  async buildMikrotikScript(nas: Nas, ros = 6): Promise<string> {
+    const username = nas.sstpUsername ?? (nas.nasname ? this.tenantsService.findChapUsernameByIp(nas.nasname) : null);
     if (!username || !nas.secret || !nas.nasname) {
       throw new BadRequestException('بيانات SSTP غير مكتملة لهذا الجهاز');
     }
-    const commands = [
-      `/interface sstp-client add name=delta-sstp connect-to=sstp2.delta-group.online:442 user="${username}" password="${nas.secret}" authentication=mschap2,mschap1 profile=default-encryption add-default-route=no disabled=no`,
-      `/radius add address=196.88.0.1 secret="${nas.secret}" service=ppp,hotspot,wireless src-address=${nas.nasname} timeout=3s`,
-      `/radius incoming set accept=yes port=3799`,
-      `/ppp aaa set interim-update=10s use-circuit-id-in-nas-port-id=yes use-radius=yes`,
-      `/ip hotspot profile set hsprof1 radius-interim-update=10s use-radius=yes`,
-    ];
-    return commands.join('; ') + '\n';
+
+    // RouterOS 6: port is part of connect-to  → connect-to=host:442
+    // RouterOS 7: port is a SEPARATE parameter → connect-to=host port=442
+    //   (the ":442" suffix is what triggers "bad address or dns name" on v7).
+    //   v7 also connects by the resolved IP so a DNS-less router still works.
+    let sstpAddr: string;
+    const comments: string[] = [];
+    if (ros >= 7) {
+      const ip = await this.resolveSstpIp();
+      const host = ip ?? NasService.SSTP_HOST;
+      sstpAddr = `connect-to=${host} port=${NasService.SSTP_PORT} verify-server-certificate=no`;
+      comments.push(`# RouterOS 7 — المنفذ معامل منفصل (port=) والاتصال بعنوان IP المحلول`);
+      if (ip) comments.push(`# ${NasService.SSTP_HOST} = ${ip}`);
+    } else {
+      sstpAddr = `connect-to=${NasService.SSTP_HOST}:${NasService.SSTP_PORT}`;
+    }
+
+    const commands: string[] = [...comments];
+
+    // ── 1. Create a RouterOS user with SSTP credentials ──────────────
+    //    Used later for API access (modem import). :do…on-error silences
+    //    the "already exists" error so re-running the script is safe.
+    commands.push(`:do {/user remove [find name="${username}"]} on-error={}`);
+    commands.push(`/user add name="${username}" password="${nas.secret}" group=full comment="DeltaRadius"`);
+
+    // ── 2. Enable API service (port 8728) ────────────────────────────
+    commands.push(`/ip service set api disabled=no`);
+
+    // ── 3. SSTP + RADIUS setup ───────────────────────────────────────
+    commands.push(`/interface sstp-client add name=delta-sstp ${sstpAddr} user="${username}" password="${nas.secret}" authentication=mschap2,mschap1 profile=default-encryption add-default-route=no disabled=no`);
+    commands.push(`/radius add address=196.88.0.1 secret="${nas.secret}" service=ppp,hotspot,wireless src-address=${nas.nasname} timeout=3s`);
+    commands.push(`/radius incoming set accept=yes port=3799`);
+    commands.push(`/ppp aaa set interim-update=10s use-circuit-id-in-nas-port-id=yes use-radius=yes`);
+    commands.push(`/ip hotspot profile set hsprof1 radius-interim-update=10s use-radius=yes`);
+
+    return commands.join('\n') + '\n';
   }
 
-  async create(dto: CreateNasDto, user: AdminUser) {
+  async create(dto: CreateNasDto, user: AdminUser, overrideTenantId?: number) {
     // 1. Auto-generate a unique SSTP username + password (no user input).
     //    Username uses a fixed "nas" prefix + random suffix — independent of any
     //    field the user typed (shortname, description, etc.) so it's truly random.
@@ -121,8 +171,10 @@ export class NasService {
     // 3. Register the SSTP user in /etc/ppp/chap-secrets with the static IP
     this.tenantsService.upsertChapEntry(username, password, ip);
 
-    // 4. Create the NAS row — nasname = the allocated IP, secret = the password
-    const tenantId = getTenantId(user);
+    // 4. Create the NAS row — nasname = the allocated IP, secret = the password.
+    //    Owner-side callers can target a specific tenant via the override; tenant
+    //    admins are always pinned to their own tenant.
+    const tenantId = getScopedTenantId(user, overrideTenantId);
     const nas = this.nasRepo.create({
       nasname:      ip,
       shortname:    dto.shortname ?? username,

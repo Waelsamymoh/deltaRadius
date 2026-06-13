@@ -12,17 +12,24 @@ import LandingLoginPage from '@/pages/LandingLoginPage'
 import DashboardPage from '@/pages/dashboard/DashboardPage'
 import UsersPage from '@/pages/users/UsersPage'
 import NasPage from '@/pages/nas/NasPage'
-import GroupsPage from '@/pages/groups/GroupsPage'
 import AccountingPage from '@/pages/accounting/AccountingPage'
 import TenantsPage from '@/pages/tenants/TenantsPage'
 import TenantDetailPage from '@/pages/tenants/TenantDetailPage'
 import OwnerAssistantsPage from '@/pages/owner-assistants/OwnerAssistantsPage'
+import TenantAssistantsPage from '@/pages/tenant-assistants/TenantAssistantsPage'
+import ReportsPage from '@/pages/reports/ReportsPage'
+import SalesReceiptsPage from '@/pages/sales-receipts/SalesReceiptsPage'
+import AuditLogsPage from '@/pages/audit-logs/AuditLogsPage'
+import SubscriberPortal from '@/pages/subscriber-portal/SubscriberPortal'
 import PlansPage from '@/pages/plans/PlansPage'
 import UserDetailPage from '@/pages/users/UserDetailPage'
 import ProfilePage from '@/pages/profile/ProfilePage'
 import CardsPage from '@/pages/cards/CardsPage'
 import TopupsPage from '@/pages/topups/TopupsPage'
 import SstpPage from '@/pages/sstp/SstpPage'
+import BackupPage from '@/pages/backup/BackupPage'
+import TenantBackupPage from '@/pages/backup/TenantBackupPage'
+import ModemsPage from '@/pages/modems/ModemsPage'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
@@ -66,7 +73,8 @@ function AuthHydrator({ children }: { children: React.ReactNode }) {
 // Shared dashboard routes (used by both admin and tenant contexts).
 // `isOwnerSide` = owner OR owner_assistant (cross-tenant management context).
 // `isPureOwner` = only the actual platform owner (controls assistant management).
-function DashboardRoutes({ isOwnerSide, isPureOwner }: { isOwnerSide: boolean; isPureOwner: boolean }) {
+// `isTenantAdmin` = superadmin/admin of a single tenant (can manage tenant assistants).
+function DashboardRoutes({ isOwnerSide, isPureOwner, isTenantAdmin }: { isOwnerSide: boolean; isPureOwner: boolean; isTenantAdmin: boolean }) {
   return (
     <Routes>
       {/* No /login route on subdomains — auth happens on the apex /login.
@@ -82,13 +90,18 @@ function DashboardRoutes({ isOwnerSide, isPureOwner }: { isOwnerSide: boolean; i
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="users" element={<UsersPage />} />
+        <Route path="sales" element={<UsersPage />} />
         <Route path="users/:username" element={<UserDetailPage />} />
         <Route path="nas" element={<NasPage />} />
-        <Route path="groups" element={<GroupsPage />} />
+        <Route path="modems" element={<ModemsPage />} />
         <Route path="accounting" element={<AccountingPage />} />
         <Route path="plans" element={<PlansPage />} />
         <Route path="cards" element={<CardsPage />} />
         <Route path="topups" element={<TopupsPage />} />
+        <Route path="reports" element={<ReportsPage />} />
+        <Route path="sales-receipts" element={<SalesReceiptsPage />} />
+        <Route path="audit-logs" element={<AuditLogsPage />} />
+        <Route path="tenant-backup" element={<TenantBackupPage />} />
         <Route path="profile" element={<ProfilePage />} />
         {/* Owner-side pages (owner OR owner-assistant with permission) */}
         {isOwnerSide && <Route path="tenants" element={<TenantsPage />} />}
@@ -96,6 +109,9 @@ function DashboardRoutes({ isOwnerSide, isPureOwner }: { isOwnerSide: boolean; i
         {isOwnerSide && <Route path="sstp" element={<SstpPage />} />}
         {/* Owner-only (assistants cannot manage other assistants) */}
         {isPureOwner && <Route path="owner-assistants" element={<OwnerAssistantsPage />} />}
+        {isPureOwner && <Route path="backup" element={<BackupPage />} />}
+        {/* Tenant superadmin / owner: manage per-tenant supervisor accounts */}
+        {(isTenantAdmin || isPureOwner) && <Route path="tenant-assistants" element={<TenantAssistantsPage />} />}
 
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
@@ -107,12 +123,13 @@ function AdminApp() {
   const user = useAuthStore(s => s.user)
   const isPureOwner = user?.role === 'owner'
   const isOwnerSide = isPureOwner || user?.role === 'owner_assistant'
+  const isTenantAdmin = user?.role === 'superadmin'
   return (
     <AuthHydrator>
       <SetupGuard>
         <Routes>
           <Route path="/setup" element={<SetupPage />} />
-          <Route path="*" element={<DashboardRoutes isOwnerSide={isOwnerSide} isPureOwner={isPureOwner} />} />
+          <Route path="*" element={<DashboardRoutes isOwnerSide={isOwnerSide} isPureOwner={isPureOwner} isTenantAdmin={isTenantAdmin} />} />
         </Routes>
       </SetupGuard>
     </AuthHydrator>
@@ -120,9 +137,19 @@ function AdminApp() {
 }
 
 function TenantApp() {
+  const user = useAuthStore(s => s.user)
+  const token = useAuthStore(s => s.token)
+  const isTenantAdmin = user?.role === 'superadmin'
+  // When NO admin is logged in on this subdomain, /users becomes the public
+  // subscriber self-service portal. Admins (who always arrive with a token
+  // from the apex login) keep seeing the normal subscribers list at /users.
+  const isAdminAuthed = !!token && !!user
   return (
     <AuthHydrator>
-      <DashboardRoutes isOwnerSide={false} isPureOwner={false} />
+      <Routes>
+        {!isAdminAuthed && <Route path="/users" element={<SubscriberPortal />} />}
+        <Route path="*" element={<DashboardRoutes isOwnerSide={false} isPureOwner={false} isTenantAdmin={isTenantAdmin} />} />
+      </Routes>
     </AuthHydrator>
   )
 }

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useSearchParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -22,6 +23,7 @@ const optionalNum = z.preprocess(
 const schema = z.object({
   name: z.string().min(1, 'مطلوب'),
   description: z.string().optional(),
+  price: optionalNum,
   downloadMbps: optionalNum,
   uploadMbps: optionalNum,
   sessionTimeoutMin: optionalNum,
@@ -43,6 +45,7 @@ type Plan = {
   id: number
   name: string
   description: string | null
+  price: string | number | null
   downloadMbps: number | null
   uploadMbps: number | null
   sessionTimeoutMin: number | null
@@ -78,9 +81,12 @@ export default function PlansPage() {
   const [editingId, setEditingId] = useState<number | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Plan | null>(null)
 
+  const [searchParams] = useSearchParams()
+  const tenantFilter = searchParams.get('tenant') ? Number(searchParams.get('tenant')) : null
+
   const { data: plans = [], isLoading } = useQuery<Plan[]>({
-    queryKey: ['plans'],
-    queryFn: () => plansApi.list().then(r => r.data),
+    queryKey: ['plans', { tenant: tenantFilter }],
+    queryFn: () => plansApi.list(tenantFilter).then(r => r.data),
   })
 
   const [burstEnabled, setBurstEnabled] = useState(false)
@@ -94,7 +100,7 @@ export default function PlansPage() {
   const speedDefined = (Number(downloadMbps) > 0) || (Number(uploadMbps) > 0)
 
   const createMutation = useMutation({
-    mutationFn: (data: FormData) => plansApi.create(data),
+    mutationFn: (data: FormData) => plansApi.create(data, tenantFilter),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['plans'] }); closeDialog() },
   })
 
@@ -109,7 +115,7 @@ export default function PlansPage() {
   })
 
   const openCreate = () => {
-    reset({ name: '', description: '', downloadMbps: undefined, uploadMbps: undefined, sessionTimeoutMin: undefined, downloadLimitGb: undefined, uploadLimitGb: undefined, totalLimitGb: undefined, burstDownloadMbps: undefined, burstUploadMbps: undefined, burstThresholdDownloadMbps: undefined, burstThresholdUploadMbps: undefined, burstTimeSeconds: undefined, framedPool: '', quotaAction: 'none', fallbackPlanId: null })
+    reset({ name: '', description: '', price: undefined, downloadMbps: undefined, uploadMbps: undefined, sessionTimeoutMin: undefined, downloadLimitGb: undefined, uploadLimitGb: undefined, totalLimitGb: undefined, burstDownloadMbps: undefined, burstUploadMbps: undefined, burstThresholdDownloadMbps: undefined, burstThresholdUploadMbps: undefined, burstTimeSeconds: undefined, framedPool: '', quotaAction: 'none', fallbackPlanId: null })
     setBurstEnabled(false)
     setEditingId(null)
     setOpen(true)
@@ -119,6 +125,7 @@ export default function PlansPage() {
     reset({
       name: p.name,
       description: p.description ?? '',
+      price: p.price != null ? Number(p.price) : undefined,
       downloadMbps: p.downloadMbps ?? undefined,
       uploadMbps: p.uploadMbps ?? undefined,
       sessionTimeoutMin: p.sessionTimeoutMin ?? undefined,
@@ -168,6 +175,14 @@ export default function PlansPage() {
             خطط الإنترنت
           </h1>
           <p className="text-muted-foreground mt-1">إدارة خطط السرعة والبيانات لـ MikroTik</p>
+          {tenantFilter && (
+            <Link
+              to={`/tenants/${tenantFilter}`}
+              className="inline-flex items-center gap-1.5 mt-2 text-xs bg-primary/15 text-primary border border-primary/20 px-2.5 py-1 rounded-full hover:bg-primary/20 transition-colors"
+            >
+              العودة للوحة العميل
+            </Link>
+          )}
         </div>
         <Button onClick={openCreate} className="gap-2">
           <Plus className="h-4 w-4" /> خطة جديدة
@@ -189,6 +204,9 @@ export default function PlansPage() {
                 <div className="flex items-start justify-between">
                   <div>
                     <CardTitle className="text-lg">{p.name}</CardTitle>
+                    {p.price != null && (
+                      <p className="text-sm font-bold text-primary mt-0.5">{Number(p.price).toFixed(2)} ج.م</p>
+                    )}
                     {p.description && <p className="text-xs text-muted-foreground mt-1">{p.description}</p>}
                   </div>
                   <div className="flex gap-1">
@@ -255,10 +273,6 @@ export default function PlansPage() {
                     <span>Pool: <Badge variant="outline" className="text-xs">{p.framedPool}</Badge></span>
                   </div>
                 )}
-                {/* Group name hint */}
-                <p className="text-xs text-muted-foreground pt-1 border-t">
-                  اسم المجموعة: <code className="bg-muted px-1 rounded">plan-{p.name.toLowerCase().replace(/\s+/g, '-')}</code>
-                </p>
               </CardContent>
             </Card>
           ))}
@@ -273,12 +287,16 @@ export default function PlansPage() {
           </DialogHeader>
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
 
-            {/* Name + Description */}
-            <div className="grid grid-cols-2 gap-3">
+            {/* Name + Price + Description */}
+            <div className="grid grid-cols-3 gap-3">
               <div className="space-y-1">
                 <Label>اسم الخطة</Label>
                 <Input {...register('name')} placeholder="خطة 10 ميجا" />
                 {errors.name && <p className="text-xs text-destructive">{errors.name.message}</p>}
+              </div>
+              <div className="space-y-1">
+                <Label>السعر (ج.م)</Label>
+                <Input type="number" step="0.01" min="0" {...register('price')} placeholder="250" />
               </div>
               <div className="space-y-1">
                 <Label>الوصف (اختياري)</Label>
@@ -412,6 +430,11 @@ export default function PlansPage() {
           <p className="text-sm text-muted-foreground">
             هل أنت متأكد من حذف خطة <strong>{deleteTarget?.name}</strong>؟ سيتم حذف سمات RADIUS المرتبطة بها أيضاً.
           </p>
+          {deleteMutation.isError && (
+            <p className="text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded px-3 py-2">
+              {(deleteMutation.error as any)?.response?.data?.message ?? 'تعذّر الحذف'}
+            </p>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>إلغاء</Button>
             <Button variant="destructive" onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)} disabled={deleteMutation.isPending}>

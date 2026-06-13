@@ -17,5 +17,6 @@ import { QuotaModule } from '../quota/quota.module';
   ],
   controllers: [RadiusUsersController],
   providers: [RadiusUsersService],
+  exports: [RadiusUsersService],
 })
 export class RadiusUsersModule {}

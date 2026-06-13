@@ -17,6 +17,9 @@ import { UserDataUsage } from './entities/user-data-usage.entity';
 import { VoucherCard } from './entities/voucher-card.entity';
 import { TopupPackage } from './entities/topup-package.entity';
 import { UserTopup } from './entities/user-topup.entity';
+import { SalesReceipt } from './entities/sales-receipt.entity';
+import { AuditLog } from './entities/audit-log.entity';
+import { Modem } from './entities/modem.entity';
 
 @Module({
   imports: [
@@ -31,7 +34,7 @@ import { UserTopup } from './entities/user-topup.entity';
           entities: [
             Tenant, Nas, RadCheck, RadReply, RadGroupCheck,
             RadGroupReply, RadUserGroup, RadAcct, RadPostAuth, AdminUser, Plan, UserProfile,
-            UserDataUsage, VoucherCard, TopupPackage, UserTopup,
+            UserDataUsage, VoucherCard, TopupPackage, UserTopup, SalesReceipt, AuditLog, Modem,
           ],
           migrations: ['dist/database/migrations/*.js'],
         };

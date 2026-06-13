@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react'
+import { useSearchParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -171,26 +172,30 @@ export default function CardsPage() {
   const [printing, setPrinting] = useState(false)
 
   // ── Data ──────────────────────────────────────────────────────────────────
+  const [searchParams] = useSearchParams()
+  const tenantFilter = searchParams.get('tenant') ? Number(searchParams.get('tenant')) : null
+
   const { data: plans = [] } = useQuery<Plan[]>({
-    queryKey: ['plans'],
-    queryFn: () => plansApi.list().then(r => r.data),
+    queryKey: ['plans', { tenant: tenantFilter }],
+    queryFn: () => plansApi.list(tenantFilter).then(r => r.data),
   })
 
   const { data: paged, isLoading: cardsLoading } = useQuery<PagedResult>({
-    queryKey: ['voucher-cards', page, search, statusFilter, planFilter],
+    queryKey: ['voucher-cards', page, search, statusFilter, planFilter, tenantFilter],
     queryFn: () => voucherCardsApi.list({
       page, limit: LIMIT,
       ...(search ? { search } : {}),
       ...(statusFilter ? { status: statusFilter } : {}),
       ...(planFilter ? { planId: Number(planFilter) } : {}),
+      ...(tenantFilter ? { tenantId: tenantFilter } : {}),
     }).then(r => r.data),
     enabled: tab === 'cards',
     refetchInterval: 10_000,
   })
 
   const { data: batches = [], isLoading: batchesLoading } = useQuery<Batch[]>({
-    queryKey: ['voucher-batches'],
-    queryFn: () => voucherCardsApi.batches().then(r => r.data),
+    queryKey: ['voucher-batches', { tenant: tenantFilter }],
+    queryFn: () => voucherCardsApi.batches(tenantFilter).then(r => r.data),
     enabled: tab === 'batches',
     refetchInterval: 10_000,
   })
@@ -228,7 +233,7 @@ export default function CardsPage() {
 
   // ── Mutations ─────────────────────────────────────────────────────────────
   const generateMut = useMutation({
-    mutationFn: (dto: GenerateFormData) => voucherCardsApi.generate(dto).then(r => r.data),
+    mutationFn: (dto: GenerateFormData) => voucherCardsApi.generate(dto, tenantFilter).then(r => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['voucher-cards'] })
       qc.invalidateQueries({ queryKey: ['voucher-batches'] })
@@ -250,14 +255,18 @@ export default function CardsPage() {
   const deleteCardMut = useMutation({
     mutationFn: (id: number) => voucherCardsApi.remove(id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['voucher-cards'] })
-      qc.invalidateQueries({ queryKey: ['voucher-batches'] })
+      qc.invalidateQueries({ queryKey: ['voucher-cards'], refetchType: 'all' })
+      qc.invalidateQueries({ queryKey: ['voucher-batches'], refetchType: 'all' })
       setDeleteCard(null)
+    },
+    onError: (err: any) => {
+      // eslint-disable-next-line no-console
+      console.error('[delete card] failed', err?.response?.status, err?.response?.data)
     },
   })
 
   const deleteBatchMut = useMutation({
-    mutationFn: (name: string) => voucherCardsApi.removeBatch(name),
+    mutationFn: (name: string) => voucherCardsApi.removeBatch(name, tenantFilter),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['voucher-cards'] })
       qc.invalidateQueries({ queryKey: ['voucher-batches'] })
@@ -267,7 +276,7 @@ export default function CardsPage() {
 
   const rangeDeleteMut = useMutation({
     mutationFn: ({ from, to }: { from: string; to: string }) =>
-      voucherCardsApi.removeByRange(from, to).then(r => r.data),
+      voucherCardsApi.removeByRange(from, to, tenantFilter).then(r => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['voucher-cards'] })
       qc.invalidateQueries({ queryKey: ['voucher-batches'] })
@@ -277,7 +286,7 @@ export default function CardsPage() {
 
   const rangeDisableMut = useMutation({
     mutationFn: ({ from, to }: { from: string; to: string }) =>
-      voucherCardsApi.disableByRange(from, to).then(r => r.data),
+      voucherCardsApi.disableByRange(from, to, tenantFilter).then(r => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['voucher-cards'] })
       setRangeDialog(false)
@@ -294,7 +303,7 @@ export default function CardsPage() {
   const executePrint = async (batch: Batch, perPage: number) => {
     setPrinting(true)
     try {
-      const res = await voucherCardsApi.batchCards(batch.batchName)
+      const res = await voucherCardsApi.batchCards(batch.batchName, tenantFilter)
       const allCards: VoucherCard[] = res.data
 
       const pages: VoucherCard[][] = []
@@ -423,6 +432,14 @@ ${pages.map(pageHtml).join('')}
         <div className="flex items-center gap-2">
           <CreditCard className="w-6 h-6 text-primary" />
           <h1 className="text-xl font-bold">الكروت</h1>
+          {tenantFilter && (
+            <Link
+              to={`/tenants/${tenantFilter}`}
+              className="inline-flex items-center gap-1.5 mx-2 text-xs bg-primary/15 text-primary border border-primary/20 px-2.5 py-1 rounded-full hover:bg-primary/20 transition-colors"
+            >
+              العودة للوحة العميل
+            </Link>
+          )}
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => setRangeDialog(true)} className="gap-2">
@@ -953,10 +970,19 @@ ${pages.map(pageHtml).join('')}
             هل أنت متأكد من حذف الكرت <span className="font-mono font-bold text-foreground">{deleteCard?.code}</span>؟
             سيتم حذفه من FreeRADIUS أيضاً.
           </p>
+          {deleteCardMut.isError && (
+            <p className="text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded px-3 py-2">
+              {(deleteCardMut.error as any)?.response?.data?.message ?? 'تعذّر الحذف'}
+            </p>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteCard(null)}>إلغاء</Button>
-            <Button variant="destructive" onClick={() => deleteCard && deleteCardMut.mutate(deleteCard.id)} disabled={deleteCardMut.isPending}>
-              حذف
+            <Button variant="destructive" onClick={() => {
+              // eslint-disable-next-line no-console
+              console.log('[delete card] click — id:', deleteCard?.id)
+              if (deleteCard) deleteCardMut.mutate(deleteCard.id)
+            }} disabled={deleteCardMut.isPending}>
+              {deleteCardMut.isPending ? 'جاري الحذف...' : 'حذف'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -970,6 +996,11 @@ ${pages.map(pageHtml).join('')}
             هل أنت متأكد من حذف دفعة <span className="font-semibold text-foreground">"{deleteBatch?.batchName}"</span> بالكامل؟
             <br />سيتم حذف <span className="font-bold text-destructive">{deleteBatch?.total} كرت</span> نهائياً من قاعدة البيانات وFreeRADIUS.
           </p>
+          {deleteBatchMut.isError && (
+            <p className="text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded px-3 py-2">
+              {(deleteBatchMut.error as any)?.response?.data?.message ?? 'تعذّر الحذف'}
+            </p>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteBatch(null)}>إلغاء</Button>
             <Button

@@ -16,6 +16,10 @@ export class Plan {
   @Column({ type: 'varchar', length: 255, nullable: true })
   description: string | null;
 
+  /** Subscription fee per cycle — displayed in the subscribers/sales tables. */
+  @Column({ type: 'numeric', precision: 10, scale: 2, nullable: true })
+  price: number | null;
+
   @Column({ name: 'download_mbps', type: 'numeric', precision: 10, scale: 2, nullable: true })
   downloadMbps: number | null;
 

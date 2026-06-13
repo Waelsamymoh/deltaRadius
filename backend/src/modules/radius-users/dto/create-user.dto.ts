@@ -1,4 +1,4 @@
-import { IsString, IsOptional, MinLength, IsNumber, IsDateString } from 'class-validator';
+import { IsString, IsOptional, MinLength, IsNumber, IsDateString, IsIn } from 'class-validator';
 
 export class CreateRadiusUserDto {
   @IsString()
@@ -32,4 +32,25 @@ export class CreateRadiusUserDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  /** Free-text organisational label for grouping/filtering subscribers. */
+  @IsOptional()
+  @IsString()
+  groupName?: string;
+
+  /** Initial consumption in GB to carry over from another system.
+   *  Adds to the new subscriber's counter at creation time. */
+  @IsOptional()
+  @IsNumber()
+  initialUsageGb?: number;
+
+  /** Self-service portal password — subscriber logs in with mobile + this. */
+  @IsOptional()
+  @IsString()
+  portalPassword?: string;
+
+  /** Connection type on the MikroTik: hotspot or broadband (PPPoE). */
+  @IsOptional()
+  @IsIn(['hotspot', 'broadband'])
+  connectionType?: 'hotspot' | 'broadband';
 }

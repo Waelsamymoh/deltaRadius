@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useSearchParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -72,6 +73,19 @@ export default function NasPage() {
   const [copiedField, setCopiedField] = useState<string | null>(null)
   const [fetchInfo, setFetchInfo] = useState<{ nas: Nas; url: string; command: string; script: string } | null>(null)
   const [fetchLoading, setFetchLoading] = useState(false)
+  const [rosVer, setRosVer] = useState(6)
+
+  // Re-fetch the script/command for a specific RouterOS version (6 or 7).
+  const reloadForRos = async (n: Nas, ros: number) => {
+    setRosVer(ros)
+    setFetchLoading(true)
+    try {
+      const res = await nasApi.fetchCommand(n.id, ros)
+      setFetchInfo({ nas: n, url: res.data.url, command: res.data.command, script: res.data.script })
+    } finally {
+      setFetchLoading(false)
+    }
+  }
 
   const copy = (label: string, value: string) => {
     navigator.clipboard?.writeText(value)
@@ -80,9 +94,10 @@ export default function NasPage() {
   }
 
   const openFetch = async (n: Nas) => {
+    setRosVer(6)
     setFetchLoading(true)
     try {
-      const res = await nasApi.fetchCommand(n.id)
+      const res = await nasApi.fetchCommand(n.id, 6)
       setFetchInfo({
         nas: n,
         url: res.data.url,
@@ -94,30 +109,33 @@ export default function NasPage() {
     }
   }
 
-  const downloadScript = async (n: Nas) => {
-    const res = await nasApi.downloadMikrotikScript(n.id)
+  const downloadScript = async (n: Nas, ros = 6) => {
+    const res = await nasApi.downloadMikrotikScript(n.id, ros)
     const blob: Blob = res.data
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
     const slug = (n.shortname || n.nasname || `nas-${n.id}`).replace(/[^a-z0-9._-]/gi, '-')
-    a.download = `mikrotik-${slug}.rsc`
+    a.download = `mikrotik-${slug}${ros >= 7 ? '-ros7' : ''}.rsc`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
   }
 
+  const [searchParams] = useSearchParams()
+  const tenantFilter = searchParams.get('tenant') ? Number(searchParams.get('tenant')) : null
+
   const { data: nasList = [], isLoading } = useQuery<Nas[]>({
-    queryKey: ['nas'],
-    queryFn: () => nasApi.list().then(r => r.data),
+    queryKey: ['nas', { tenant: tenantFilter }],
+    queryFn: () => nasApi.list(tenantFilter).then(r => r.data),
   })
 
   const createForm = useForm<CreateFormData>({ resolver: zodResolver(createSchema) })
   const editForm   = useForm<EditFormData>  ({ resolver: zodResolver(editSchema) })
 
   const createMutation = useMutation({
-    mutationFn: (data: CreateFormData) => nasApi.create(data).then(r => r.data as CreatedNas),
+    mutationFn: (data: CreateFormData) => nasApi.create(data, tenantFilter).then(r => r.data as CreatedNas),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['nas'] })
       closeDialog()
@@ -191,6 +209,14 @@ export default function NasPage() {
             <Server className="h-7 w-7" /> الشبكات
           </h1>
           <p className="text-muted-foreground mt-1">إدارة نقاط الوصول والموجّهات</p>
+          {tenantFilter && (
+            <Link
+              to={`/tenants/${tenantFilter}`}
+              className="inline-flex items-center gap-1.5 mt-2 text-xs bg-primary/15 text-primary border border-primary/20 px-2.5 py-1 rounded-full hover:bg-primary/20 transition-colors"
+            >
+              العودة للوحة العميل
+            </Link>
+          )}
         </div>
         <Button onClick={openCreate} className="gap-2">
           <Plus className="h-4 w-4" /> جهاز جديد
@@ -384,6 +410,7 @@ export default function NasPage() {
                 <Label>نوع الجهاز</Label>
                 <Select {...createForm.register('type')}>
                   <option value="mikrotik">MikroTik</option>
+                  <option value="router">Router</option>
                   <option value="other">أخرى (other)</option>
                 </Select>
               </div>
@@ -416,6 +443,7 @@ export default function NasPage() {
                 <Label>نوع الجهاز</Label>
                 <Select {...editForm.register('type')}>
                   <option value="mikrotik">MikroTik</option>
+                  <option value="router">Router</option>
                   <option value="other">أخرى (other)</option>
                 </Select>
               </div>
@@ -536,7 +564,28 @@ export default function NasPage() {
                 </div>
               </div>
               <div className="space-y-1">
-                <Label>كود السكريبت (للصق اليدوي)</Label>
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <Label>كود السكريبت (للصق اليدوي)</Label>
+                  {/* RouterOS version toggle */}
+                  <div className="flex items-center gap-1 text-xs">
+                    <span className="text-muted-foreground">نسخة RouterOS:</span>
+                    <button
+                      type="button"
+                      onClick={() => reloadForRos(fetchInfo.nas, 6)}
+                      className={`px-2.5 py-1 rounded-md border font-semibold transition-colors ${rosVer === 6 ? 'bg-primary/15 text-primary border-primary/30' : 'bg-transparent text-muted-foreground border-input hover:text-foreground'}`}
+                    >v6</button>
+                    <button
+                      type="button"
+                      onClick={() => reloadForRos(fetchInfo.nas, 7)}
+                      className={`px-2.5 py-1 rounded-md border font-semibold transition-colors ${rosVer === 7 ? 'bg-primary/15 text-primary border-primary/30' : 'bg-transparent text-muted-foreground border-input hover:text-foreground'}`}
+                    >v7</button>
+                  </div>
+                </div>
+                {rosVer === 7 && (
+                  <p className="text-[11px] text-amber-500 bg-amber-500/10 border border-amber-500/20 rounded px-2 py-1">
+                    نسخة 7: يتصل بعنوان IP المحلول بدل اسم النطاق لتفادي خطأ «bad address or dns name».
+                  </p>
+                )}
                 <div className="flex gap-2 items-start">
                   <textarea
                     readOnly
@@ -563,6 +612,11 @@ export default function NasPage() {
             </div>
           )}
           <DialogFooter>
+            {fetchInfo && (
+              <Button variant="outline" className="gap-1.5" onClick={() => downloadScript(fetchInfo.nas, rosVer)}>
+                <Download className="h-4 w-4" /> تحميل ملف (v{rosVer})
+              </Button>
+            )}
             <Button onClick={() => setFetchInfo(null)}>إغلاق</Button>
           </DialogFooter>
         </DialogContent>
@@ -575,6 +629,11 @@ export default function NasPage() {
           <p className="text-sm text-muted-foreground">
             هل أنت متأكد من حذف الجهاز <strong>{deleteTarget?.nasname}</strong>؟
           </p>
+          {deleteMutation.isError && (
+            <p className="text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded px-3 py-2">
+              {(deleteMutation.error as any)?.response?.data?.message ?? 'تعذّر الحذف'}
+            </p>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>إلغاء</Button>
             <Button

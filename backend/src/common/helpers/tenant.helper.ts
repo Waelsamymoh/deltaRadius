@@ -8,6 +8,19 @@ export function getTenantId(user: AdminUser): number | null {
   return user.tenantId;
 }
 
+/**
+ * Resolve effective tenant scope when the request optionally narrows it via
+ * ?tenantId=X. Owner/assistant may target any specific tenant; tenant admins
+ * always stay confined to their own tenant regardless of the override.
+ */
+export function getScopedTenantId(user: AdminUser, override?: number | null): number | null {
+  if (user.role === AdminRole.OWNER || user.role === AdminRole.OWNER_ASSISTANT) {
+    return override ?? null; // null = cross-tenant (show all)
+  }
+  if (!user.tenantId) throw new ForbiddenException('No tenant associated with this account');
+  return user.tenantId;
+}
+
 export function isOwner(user: AdminUser): boolean {
   return user.role === AdminRole.OWNER;
 }

@@ -1,10 +1,10 @@
-import { useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useEffect, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { UserCog, KeyRound, CheckCircle2, Mail, ShieldCheck } from 'lucide-react'
-import { authApi } from '@/api/endpoints'
+import { UserCog, KeyRound, CheckCircle2, Mail, ShieldCheck, Clock, Save } from 'lucide-react'
+import { authApi, tenantSettingsApi, settingsApi } from '@/api/endpoints'
 import { useAuthStore } from '@/store/auth.store'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -30,8 +30,44 @@ type PasswordForm = z.infer<typeof passwordSchema>
 
 export default function ProfilePage() {
   const { user, updateSession } = useAuthStore()
+  const qc = useQueryClient()
   const [infoSuccess, setInfoSuccess] = useState(false)
   const [passSuccess, setPassSuccess] = useState(false)
+  const isTenantAdmin = user?.role === 'superadmin'
+  const isOwner = user?.role === 'owner'
+
+  // System time config (owner only) — auto (timezone) or manual (set clock)
+  const [timeMode, setTimeMode] = useState<'auto' | 'manual'>('auto')
+  const [tz, setTz] = useState('')
+  const [manualDt, setManualDt] = useState('')
+  const [tzSaved, setTzSaved] = useState(false)
+  const timeQuery = useQuery({
+    queryKey: ['system-time'],
+    queryFn: () => settingsApi.getTime().then(r => r.data as { mode: 'auto' | 'manual'; timezone: string; now: string; today: string }),
+    enabled: isOwner,
+  })
+  useEffect(() => {
+    if (timeQuery.data) {
+      setTimeMode(timeQuery.data.mode)
+      setTz(timeQuery.data.timezone)
+      // prefill the manual input with the current system clock (YYYY-MM-DDTHH:mm)
+      if (timeQuery.data.now) setManualDt(String(timeQuery.data.now).slice(0, 16))
+    }
+  }, [timeQuery.data])
+  const tzMutation = useMutation({
+    mutationFn: () => timeMode === 'manual' ? settingsApi.setTimeManual(manualDt) : settingsApi.setTimeAuto(tz),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['system-time'] })
+      setTzSaved(true)
+      setTimeout(() => setTzSaved(false), 2000)
+    },
+  })
+
+  const TIMEZONES = [
+    'Africa/Cairo', 'Asia/Riyadh', 'Asia/Baghdad', 'Asia/Dubai', 'Asia/Kuwait',
+    'Asia/Qatar', 'Asia/Amman', 'Asia/Beirut', 'Asia/Jerusalem', 'Africa/Khartoum',
+    'Africa/Tripoli', 'Africa/Algiers', 'Africa/Casablanca', 'Asia/Aden', 'UTC',
+  ]
 
   const infoForm = useForm<InfoForm>({
     resolver: zodResolver(infoSchema),
@@ -60,6 +96,26 @@ export default function ProfilePage() {
       passwordForm.reset()
       setPassSuccess(true)
       setTimeout(() => setPassSuccess(false), 3000)
+    },
+  })
+
+  // Tenant-wide settings (visible only to the tenant's superadmin).
+  const [expiryTime, setExpiryTime] = useState('12:00')
+  const [expirySaved, setExpirySaved] = useState(false)
+  const { data: tenantSettings } = useQuery<{ defaultExpiryTime: string }>({
+    queryKey: ['tenant-settings'],
+    queryFn: () => tenantSettingsApi.get().then(r => r.data),
+    enabled: isTenantAdmin,
+  })
+  useEffect(() => {
+    if (tenantSettings?.defaultExpiryTime) setExpiryTime(tenantSettings.defaultExpiryTime)
+  }, [tenantSettings])
+  const expirySaveMutation = useMutation({
+    mutationFn: (payload: { defaultExpiryTime: string }) => tenantSettingsApi.update(payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tenant-settings'] })
+      setExpirySaved(true)
+      setTimeout(() => setExpirySaved(false), 2000)
     },
   })
 
@@ -105,6 +161,75 @@ export default function ProfilePage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* System timezone — owner only */}
+      {isOwner && (
+        <Card className="mb-6 border-primary/20">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Clock className="h-4 w-4 text-primary" /> توقيت النظام العام
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground mb-3">
+              التوقيت الذي يعمل به النظام بالكامل — يُحتسب الاستهلاك اليومي للرواتر وتدوّر اليوم الجديد حسبه (وليس حسب توقيت المايكروتك أو الخادم).
+            </p>
+
+            {/* Current system clock */}
+            {timeQuery.data?.now && (
+              <div className="mb-3 text-sm bg-primary/5 border border-primary/15 rounded-lg px-3 py-2 inline-flex items-center gap-2">
+                <Clock className="h-4 w-4 text-primary" />
+                وقت النظام الحالي: <strong className="font-mono" dir="ltr">{String(timeQuery.data.now).replace('T', ' ').slice(0, 16)}</strong>
+              </div>
+            )}
+
+            {/* Mode toggle */}
+            <div className="flex gap-1 mb-4">
+              <button
+                onClick={() => setTimeMode('auto')}
+                className={`px-3 py-1.5 rounded-lg text-sm font-semibold border transition-colors ${timeMode === 'auto' ? 'bg-primary/15 text-primary border-primary/30' : 'bg-transparent text-muted-foreground border-input hover:text-foreground'}`}
+              >تلقائي (منطقة زمنية)</button>
+              <button
+                onClick={() => setTimeMode('manual')}
+                className={`px-3 py-1.5 rounded-lg text-sm font-semibold border transition-colors ${timeMode === 'manual' ? 'bg-primary/15 text-primary border-primary/30' : 'bg-transparent text-muted-foreground border-input hover:text-foreground'}`}
+              >ضبط يدوي</button>
+            </div>
+
+            <div className="flex items-end gap-3 flex-wrap">
+              {timeMode === 'auto' ? (
+                <div className="space-y-1">
+                  <Label>المنطقة الزمنية</Label>
+                  <select
+                    value={tz}
+                    onChange={e => setTz(e.target.value)}
+                    className="border border-input bg-background text-foreground rounded-md px-3 py-2 text-sm min-w-[200px]"
+                  >
+                    {tz && !TIMEZONES.includes(tz) && <option value={tz}>{tz}</option>}
+                    {TIMEZONES.map(z => <option key={z} value={z}>{z}</option>)}
+                  </select>
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  <Label>التاريخ والوقت الحالي</Label>
+                  <Input type="datetime-local" value={manualDt} onChange={e => setManualDt(e.target.value)} className="min-w-[220px]" />
+                </div>
+              )}
+              <Button onClick={() => tzMutation.mutate()} disabled={tzMutation.isPending || (timeMode === 'auto' ? !tz : !manualDt)} className="gap-1.5">
+                {tzSaved ? <CheckCircle2 className="h-4 w-4" /> : <Save className="h-4 w-4" />}
+                {tzSaved ? 'تم الحفظ' : tzMutation.isPending ? 'جاري الحفظ...' : 'حفظ'}
+              </Button>
+            </div>
+            {timeMode === 'manual' && (
+              <p className="text-xs text-muted-foreground mt-2">
+                يضبط ساعة النظام على القيمة المُدخلة وتستمر بالعمل من تلك اللحظة. استخدمه إذا كان توقيت الخادم غير مضبوط.
+              </p>
+            )}
+            {tzMutation.isError && (
+              <p className="text-sm text-destructive mt-2">{(tzMutation.error as any)?.response?.data?.message ?? 'تعذّر الحفظ'}</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Two-column grid: info + password */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -199,6 +324,53 @@ export default function ProfilePage() {
       </Card>
 
       </div>
+
+      {/* Tenant-wide settings — superadmin only */}
+      {isTenantAdmin && (
+        <Card className="mt-6">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Clock className="h-4 w-4 text-primary" /> إعدادات حساب العميل
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="space-y-2">
+              <Label className="text-sm">وقت انتهاء الاشتراك الافتراضي</Label>
+              <p className="text-xs text-muted-foreground">
+                عند تجديد أي مشترك بمدة معينة (مثلاً 30 يوم)، اشتراكه يفضل ساري
+                حتى الوقت ده بالظبط في آخر يوم. الوقت بصيغة 24 ساعة.
+              </p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <Input
+                  type="time"
+                  value={expiryTime}
+                  onChange={e => setExpiryTime(e.target.value)}
+                  className="w-40 text-center text-lg font-mono"
+                  dir="ltr"
+                />
+                <Button
+                  onClick={() => expirySaveMutation.mutate({ defaultExpiryTime: expiryTime })}
+                  disabled={expirySaveMutation.isPending || expiryTime === tenantSettings?.defaultExpiryTime}
+                  className="gap-1.5"
+                >
+                  <Save className="h-4 w-4" />
+                  {expirySaveMutation.isPending ? 'جاري الحفظ...' : 'حفظ'}
+                </Button>
+                {expirySaved && (
+                  <span className="flex items-center gap-1 text-emerald-500 text-sm">
+                    <CheckCircle2 className="h-4 w-4" /> تم الحفظ
+                  </span>
+                )}
+              </div>
+              {expirySaveMutation.isError && (
+                <p className="text-xs text-destructive">
+                  {(expirySaveMutation.error as any)?.response?.data?.message ?? 'تعذّر الحفظ'}
+                </p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }

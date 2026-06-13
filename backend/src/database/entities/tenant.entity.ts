@@ -29,6 +29,28 @@ export class Tenant {
   @Column({ type: 'varchar', name: 'contact_phone', length: 20, nullable: true })
   contactPhone: string | null;
 
+  /** Time-of-day (HH:MM, 24h) at which renewed subscriptions expire — used by
+   *  FreeRADIUS Expiration. Defaults to noon so mid-day renewals don't lose
+   *  the rest of the renewal day. Configurable per tenant via Settings. */
+  @Column({ type: 'varchar', name: 'default_expiry_time', length: 5, default: '12:00' })
+  defaultExpiryTime: string;
+
+  /** Periodic full wipe of radpostauth for this tenant. When enabled, a
+   *  background job clears all auth logs every `authLogAutoPurgeDays`. */
+  @Column({ name: 'auth_log_auto_purge_enabled', type: 'boolean', default: false })
+  authLogAutoPurgeEnabled: boolean;
+
+  @Column({ name: 'auth_log_auto_purge_days', type: 'integer', nullable: true })
+  authLogAutoPurgeDays: number | null;
+
+  /** Unit applied to authLogAutoPurgeDays — 'days' or 'hours'. The column name
+   *  kept its legacy `_days` suffix for backward-compat; treat it as "value". */
+  @Column({ name: 'auth_log_auto_purge_unit', type: 'varchar', length: 8, default: 'days' })
+  authLogAutoPurgeUnit: 'days' | 'hours';
+
+  @Column({ name: 'auth_log_last_purge_at', type: 'timestamp', nullable: true })
+  authLogLastPurgeAt: Date | null;
+
   @Column({ unique: true, nullable: true })
   realm: string;
 

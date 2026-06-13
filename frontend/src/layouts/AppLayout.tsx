@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import {
-  LayoutDashboard, Users, Server, Group, Activity,
-  Building2, LogOut, Wifi, Zap, Settings, CreditCard, Database, ShieldCheck,
+  LayoutDashboard, Users, Server, Activity, ShoppingCart, BarChart3, Receipt, ScrollText,
+  Building2, LogOut, Wifi, Zap, Settings, CreditCard, Database, ShieldCheck, DatabaseBackup, Router,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/store/auth.store'
@@ -13,12 +13,15 @@ import { useAuthStore } from '@/store/auth.store'
 const allNavItems = [
   { to: '/dashboard',  label: 'الرئيسية',      icon: LayoutDashboard, modPerm: 'dashboard',       ownerPerm: null            },
   { to: '/users',      label: 'المشتركين',       icon: Users,           modPerm: 'users.view',      ownerPerm: 'users.manage'  },
+  { to: '/sales',      label: 'المبيعات',        icon: ShoppingCart,    modPerm: 'users.view',      ownerPerm: 'users.sales'   },
   { to: '/nas',        label: 'الشبكات',         icon: Server,          modPerm: 'nas.view',        ownerPerm: 'nas.manage'    },
-  { to: '/groups',     label: 'المجموعات',      icon: Group,           modPerm: 'groups.view',     ownerPerm: 'users.manage'  },
-  { to: '/accounting', label: 'المحاسبة',       icon: Activity,        modPerm: 'accounting.view', ownerPerm: 'accounting.view' },
+  { to: '/modems',     label: 'موديمات المشتركين', icon: Router,         modPerm: 'modems.manage',   ownerPerm: 'modems.manage' },
+  { to: '/accounting', label: 'الجلسات وسجلات المصادقة', icon: Activity, modPerm: 'accounting.view', ownerPerm: 'accounting.view' },
   { to: '/plans',      label: 'خطط الإنترنت',   icon: Zap,             modPerm: 'plans.view',      ownerPerm: 'plans.manage'  },
   { to: '/cards',      label: 'كروت الإنترنت',  icon: CreditCard,      modPerm: 'cards.view',      ownerPerm: 'cards.manage'  },
   { to: '/topups',     label: 'باقات الكوتة',   icon: Database,        modPerm: 'topups.view',     ownerPerm: 'topups.manage' },
+  { to: '/reports',    label: 'تقارير الاستهلاك', icon: BarChart3,       modPerm: 'accounting.view', ownerPerm: 'accounting.view' },
+  { to: '/sales-receipts', label: 'فواتير المبيعات', icon: Receipt,       modPerm: 'users.renew',     ownerPerm: 'users.renew'    },
 ]
 
 const roleLabels: Record<string, string> = {
@@ -36,18 +39,26 @@ export default function AppLayout() {
   const isModerator       = user?.role === 'moderator'
   const isOwnerAssistant  = user?.role === 'owner_assistant'
   const isPureOwner       = user?.role === 'owner'
+  const isTenantAdmin     = user?.role === 'superadmin'
+  const isTenantAssistant = user?.role === 'tenant_assistant'
   const permissions       = user?.permissions ?? []
 
-  const navItems = isModerator
-    ? allNavItems.filter(item => permissions.includes(item.modPerm))
-    : isOwnerAssistant
+  // The owner doesn't see the cross-tenant resource pages globally — they
+  // enter every resource via the tenant detail page so the data is always
+  // scoped to one client. Only Dashboard + Accounting overview stay.
+  // Tenant assistants reuse the same `ownerPerm` keys (users.manage, etc.).
+  const navItems = isPureOwner
+    ? allNavItems.filter(item => item.to === '/dashboard' || item.to === '/accounting')
+    : isOwnerAssistant || isTenantAssistant
       ? allNavItems.filter(item => item.ownerPerm === null || permissions.includes(item.ownerPerm))
-      : allNavItems
+      : isModerator
+        ? allNavItems.filter(item => permissions.includes(item.modPerm))
+        : allNavItems
 
   // Owner-side "إدارة النظام" section visibility
   const showTenantsLink = isPureOwner || (isOwnerAssistant && permissions.includes('tenants.manage'))
   const showSstpLink    = isPureOwner || (isOwnerAssistant && permissions.includes('sstp.manage'))
-  const showAdminSection = isPureOwner || showTenantsLink || showSstpLink
+  const showAdminSection = isPureOwner || isTenantAdmin || showTenantsLink || showSstpLink
 
   const navLinkClass = ({ isActive }: { isActive: boolean }) =>
     cn(
@@ -101,6 +112,30 @@ export default function AppLayout() {
                 <NavLink to="/owner-assistants" className={navLinkClass}>
                   <Users className="h-4 w-4" />
                   المساعدين
+                </NavLink>
+              )}
+              {isPureOwner && (
+                <NavLink to="/backup" className={navLinkClass}>
+                  <DatabaseBackup className="h-4 w-4" />
+                  النسخ الاحتياطي
+                </NavLink>
+              )}
+              {isTenantAdmin && (
+                <NavLink to="/tenant-assistants" className={navLinkClass}>
+                  <ShieldCheck className="h-4 w-4" />
+                  المشرفون
+                </NavLink>
+              )}
+              {isTenantAdmin && (
+                <NavLink to="/tenant-backup" className={navLinkClass}>
+                  <DatabaseBackup className="h-4 w-4" />
+                  النسخ الاحتياطي
+                </NavLink>
+              )}
+              {(isTenantAdmin || isTenantAssistant) && (
+                <NavLink to="/audit-logs" className={navLinkClass}>
+                  <ScrollText className="h-4 w-4" />
+                  سجل النشاطات
                 </NavLink>
               )}
             </>

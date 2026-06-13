@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useSearchParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -33,9 +34,12 @@ export default function TopupsPage() {
   const [editingId, setEditingId] = useState<number | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<TopupPackage | null>(null)
 
+  const [searchParams] = useSearchParams()
+  const tenantFilter = searchParams.get('tenant') ? Number(searchParams.get('tenant')) : null
+
   const { data: pkgs = [], isLoading } = useQuery<TopupPackage[]>({
-    queryKey: ['topup-packages'],
-    queryFn: () => topupsApi.listPackages().then(r => r.data),
+    queryKey: ['topup-packages', { tenant: tenantFilter }],
+    queryFn: () => topupsApi.listPackages(tenantFilter).then(r => r.data),
   })
 
   const { register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<FormData>({
@@ -43,7 +47,7 @@ export default function TopupsPage() {
   })
 
   const createMutation = useMutation({
-    mutationFn: (data: FormData) => topupsApi.createPackage(data),
+    mutationFn: (data: FormData) => topupsApi.createPackage(data, tenantFilter),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['topup-packages'] }); closeDialog() },
   })
   const updateMutation = useMutation({
@@ -78,6 +82,14 @@ export default function TopupsPage() {
             <Database className="h-7 w-7 text-purple-500" /> باقات الكوتة الإضافية
           </h1>
           <p className="text-muted-foreground mt-1">باقات بيانات يمكن إضافتها للمشتركين كباقات إضافية</p>
+          {tenantFilter && (
+            <Link
+              to={`/tenants/${tenantFilter}`}
+              className="inline-flex items-center gap-1.5 mt-2 text-xs bg-primary/15 text-primary border border-primary/20 px-2.5 py-1 rounded-full hover:bg-primary/20 transition-colors"
+            >
+              العودة للوحة العميل
+            </Link>
+          )}
         </div>
         <Button onClick={openCreate} className="gap-2">
           <Plus className="h-4 w-4" /> باقة جديدة
@@ -175,6 +187,11 @@ export default function TopupsPage() {
           <p className="text-sm text-muted-foreground">
             حذف باقة <strong>{deleteTarget?.name}</strong>؟
           </p>
+          {deleteMutation.isError && (
+            <p className="text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded px-3 py-2">
+              {(deleteMutation.error as any)?.response?.data?.message ?? 'تعذّر الحذف'}
+            </p>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>إلغاء</Button>
             <Button variant="destructive" disabled={deleteMutation.isPending}

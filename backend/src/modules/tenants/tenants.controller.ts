@@ -33,6 +33,20 @@ export class TenantsController {
     return this.tenantsService.findAll(includeArchived === 'true');
   }
 
+  /** Tenant-scoped settings, auto-resolved from the JWT — no `:id` so the
+   *  caller can never accidentally hit another tenant's settings. */
+  @Get('settings')
+  getSettings(@CurrentUser() user: AdminUser) {
+    if (!user.tenantId) throw new ForbiddenException('لا يوجد عميل مرتبط بحسابك');
+    return this.tenantsService.getSettings(user.tenantId);
+  }
+
+  @Patch('settings')
+  updateSettings(@CurrentUser() user: AdminUser, @Body() dto: { defaultExpiryTime?: string }) {
+    if (!user.tenantId) throw new ForbiddenException('لا يوجد عميل مرتبط بحسابك');
+    return this.tenantsService.updateSettings(user.tenantId, dto);
+  }
+
   @Get(':id')
   findOne(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: AdminUser) {
     if (!isOwnerSide(user) && user.tenantId !== id) {

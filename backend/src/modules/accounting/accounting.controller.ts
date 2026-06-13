@@ -1,11 +1,14 @@
-import { Controller, Get, Delete, Post, Query, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Delete, Post, Put, Query, Param, Body, UseGuards } from '@nestjs/common';
 import { AccountingService } from './accounting.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
+import { RequirePermissions } from '../../common/decorators/permissions.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AdminUser } from '../../database/entities/admin-user.entity';
 
 @Controller('accounting')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
+@RequirePermissions('accounting.view')
 export class AccountingController {
   constructor(private readonly accountingService: AccountingService) {}
 
@@ -34,6 +37,24 @@ export class AccountingController {
     @Param('month') month: string,
   ) {
     return this.accountingService.deleteAuthLogsByMonth(user, month);
+  }
+
+  @Delete('auth-logs')
+  deleteAllAuthLogs(@CurrentUser() user: AdminUser) {
+    return this.accountingService.deleteAllAuthLogs(user);
+  }
+
+  @Get('auth-logs/auto-purge')
+  getAuthLogAutoPurge(@CurrentUser() user: AdminUser) {
+    return this.accountingService.getAuthLogAutoPurge(user);
+  }
+
+  @Put('auth-logs/auto-purge')
+  setAuthLogAutoPurge(
+    @CurrentUser() user: AdminUser,
+    @Body() body: { enabled: boolean; days?: number | null; unit?: 'days' | 'hours' },
+  ) {
+    return this.accountingService.setAuthLogAutoPurge(user, body);
   }
 
   @Get('stats')

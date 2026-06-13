@@ -13,6 +13,12 @@ export class CreatePlanDto {
   @Type(() => Number)
   @IsNumber()
   @Min(0)
+  price?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
   downloadMbps?: number;
 
   @IsOptional()

@@ -8,7 +8,7 @@ import { Plan } from '../../database/entities/plan.entity';
 import { RadCheck } from '../../database/entities/radcheck.entity';
 import { RadUserGroup } from '../../database/entities/radusergroup.entity';
 import { AdminUser } from '../../database/entities/admin-user.entity';
-import { getTenantId } from '../../common/helpers/tenant.helper';
+import { getTenantId, getScopedTenantId } from '../../common/helpers/tenant.helper';
 import { GenerateCardsDto } from './dto/generate-cards.dto';
 import { UpdateCardDto } from './dto/update-card.dto';
 
@@ -22,8 +22,11 @@ export class VoucherCardsService {
     private readonly dataSource: DataSource,
   ) {}
 
-  async generate(dto: GenerateCardsDto, user: AdminUser): Promise<VoucherCard[]> {
-    const tenantId = getTenantId(user);
+  async generate(dto: GenerateCardsDto, user: AdminUser, overrideTenantId?: number): Promise<VoucherCard[]> {
+    const tenantId = getScopedTenantId(user, overrideTenantId);
+    if (tenantId === null) {
+      throw new BadRequestException('يجب تحديد العميل (tenantId) قبل توليد كروت');
+    }
     const plan = await this.planRepo.findOne({
       where: tenantId ? { id: dto.planId, tenantId } : { id: dto.planId },
     });
@@ -93,9 +96,9 @@ export class VoucherCardsService {
 
   async findAll(
     user: AdminUser,
-    filters: { status?: string; search?: string; planId?: number; page?: number; limit?: number },
+    filters: { status?: string; search?: string; planId?: number; page?: number; limit?: number; overrideTenantId?: number },
   ): Promise<{ data: VoucherCard[]; total: number; page: number; limit: number }> {
-    const tenantId = getTenantId(user);
+    const tenantId = getScopedTenantId(user, filters.overrideTenantId);
     const page = filters.page ?? 1;
     const limit = filters.limit ?? 50;
 
@@ -202,9 +205,12 @@ export class VoucherCardsService {
     return this.cardRepo.save(card);
   }
 
-  async getBatches(user: AdminUser) {
-    const tenantId = getTenantId(user);
-    const tid = tenantId ? `tenant_id = ${tenantId}` : 'tenant_id IS NULL';
+  async getBatches(user: AdminUser, overrideTenantId?: number) {
+    const tenantId = getScopedTenantId(user, overrideTenantId);
+    // Owner without override → cross-tenant (no WHERE filter)
+    // Owner with override → filter to that tenant
+    // Tenant admin → filter to their own tenant
+    const tid = tenantId !== null ? `WHERE tenant_id = ${tenantId}` : '';
     const rows = await this.dataSource.query(`
       SELECT
         vc.batch_name,
@@ -219,7 +225,7 @@ export class VoucherCardsService {
         (SELECT p.name FROM plans p WHERE p.id = MIN(vc.plan_id) LIMIT 1) AS plan_name,
         MIN(vc.duration_days)                                   AS duration_days
       FROM voucher_cards vc
-      WHERE ${tid}
+      ${tid}
       GROUP BY vc.batch_name, vc.start_mode, vc.auth_mode
       ORDER BY MIN(vc.created_at) DESC
     `);
@@ -238,23 +244,24 @@ export class VoucherCardsService {
     }));
   }
 
-  async getBatchCards(batchName: string, user: AdminUser): Promise<VoucherCard[]> {
-    const tenantId = getTenantId(user);
+  async getBatchCards(batchName: string, user: AdminUser, overrideTenantId?: number): Promise<VoucherCard[]> {
+    const tenantId = getScopedTenantId(user, overrideTenantId);
     return this.cardRepo.find({
-      where: tenantId ? { batchName, tenantId } : { batchName },
+      where: tenantId !== null ? { batchName, tenantId } : { batchName },
       relations: ['plan'],
       order: { createdAt: 'ASC' },
     });
   }
 
-  async removeByDateRange(from: Date, to: Date, user: AdminUser): Promise<{ deleted: number }> {
-    const tenantId = getTenantId(user);
-    const cards = await this.cardRepo
+  async removeByDateRange(from: Date, to: Date, user: AdminUser, overrideTenantId?: number): Promise<{ deleted: number }> {
+    const tenantId = getScopedTenantId(user, overrideTenantId);
+    const qb = this.cardRepo
       .createQueryBuilder('c')
-      .where(tenantId ? 'c.tenantId = :tenantId' : 'c.tenantId IS NULL', { tenantId })
-      .andWhere('c.createdAt >= :from', { from })
-      .andWhere('c.createdAt <= :to', { to })
-      .getMany();
+      .where('c.createdAt >= :from', { from })
+      .andWhere('c.createdAt <= :to', { to });
+    // Owner without override → cross-tenant (no filter). Otherwise pin to tenantId.
+    if (tenantId !== null) qb.andWhere('c.tenantId = :tenantId', { tenantId });
+    const cards = await qb.getMany();
 
     if (!cards.length) return { deleted: 0 };
 
@@ -268,15 +275,15 @@ export class VoucherCardsService {
     return { deleted: cards.length };
   }
 
-  async disableByDateRange(from: Date, to: Date, user: AdminUser): Promise<{ updated: number }> {
-    const tenantId = getTenantId(user);
-    const cards = await this.cardRepo
+  async disableByDateRange(from: Date, to: Date, user: AdminUser, overrideTenantId?: number): Promise<{ updated: number }> {
+    const tenantId = getScopedTenantId(user, overrideTenantId);
+    const qb = this.cardRepo
       .createQueryBuilder('c')
-      .where(tenantId ? 'c.tenantId = :tenantId' : 'c.tenantId IS NULL', { tenantId })
-      .andWhere('c.createdAt >= :from', { from })
+      .where('c.createdAt >= :from', { from })
       .andWhere('c.createdAt <= :to', { to })
-      .andWhere("c.status != 'used'")
-      .getMany();
+      .andWhere("c.status != 'used'");
+    if (tenantId !== null) qb.andWhere('c.tenantId = :tenantId', { tenantId });
+    const cards = await qb.getMany();
 
     if (!cards.length) return { updated: 0 };
 
@@ -308,10 +315,10 @@ export class VoucherCardsService {
     });
   }
 
-  async removeBatch(batchName: string, user: AdminUser): Promise<void> {
-    const tenantId = getTenantId(user);
+  async removeBatch(batchName: string, user: AdminUser, overrideTenantId?: number): Promise<void> {
+    const tenantId = getScopedTenantId(user, overrideTenantId);
     const cards = await this.cardRepo.find({
-      where: tenantId ? { batchName, tenantId } : { batchName },
+      where: tenantId !== null ? { batchName, tenantId } : { batchName },
     });
     await this.dataSource.transaction(async (m) => {
       for (const card of cards) {

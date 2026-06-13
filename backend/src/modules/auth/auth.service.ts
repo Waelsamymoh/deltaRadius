@@ -129,6 +129,9 @@ export class AuthService {
     const emailExists = await this.adminUserRepo.findOne({ where: { email: dto.email } });
     if (emailExists) throw new ConflictException('اسم المستخدم أو البريد الإلكتروني مستخدم بالفعل');
 
+    const phoneExists = await this.tenantRepo.findOne({ where: { contactPhone: dto.phone } });
+    if (phoneExists) throw new ConflictException('رقم الموبايل مستخدم بالفعل');
+
     // Create tenant ONLY — no SSTP user is auto-created. The tenant or owner
     // will add SSTP devices manually from the "إضافة أجهزة" panel later.
     let tenant;
@@ -144,8 +147,9 @@ export class AuthService {
       });
     } catch (e: any) {
       if (e?.driverError?.code === '23505') {
-        if (e?.driverError?.constraint?.includes('subdomain'))
-          throw new ConflictException('الـ subdomain مستخدم بالفعل، اختر رابطاً آخر');
+        const c = e?.driverError?.constraint ?? '';
+        if (c.includes('subdomain'))     throw new ConflictException('الـ subdomain مستخدم بالفعل، اختر رابطاً آخر');
+        if (c.includes('contact_phone')) throw new ConflictException('رقم الموبايل مستخدم بالفعل');
         throw new ConflictException('اسم الشبكة مستخدم بالفعل، اختر اسماً آخر');
       }
       throw e;

@@ -8,7 +8,7 @@ import { Plan } from '../../database/entities/plan.entity';
 import { RadCheck } from '../../database/entities/radcheck.entity';
 import { RadReply } from '../../database/entities/radreply.entity';
 import { AdminUser } from '../../database/entities/admin-user.entity';
-import { getTenantId } from '../../common/helpers/tenant.helper';
+import { getTenantId, getScopedTenantId } from '../../common/helpers/tenant.helper';
 import { CreateTopupPackageDto, UpdateTopupPackageDto } from './dto/topup-package.dto';
 import { QuotaEnforcerService } from '../quota/quota-enforcer.service';
 
@@ -36,8 +36,11 @@ export class TopupsService {
     return (tenantId ? { tenantId, ...extra } : extra) as FindOptionsWhere<TopupPackage>;
   }
 
-  listPackages(user: AdminUser) {
-    return this.pkgRepo.find({ where: this.pkgWhere(getTenantId(user)), order: { sizeGb: 'ASC' } });
+  listPackages(user: AdminUser, overrideTenantId?: number) {
+    return this.pkgRepo.find({
+      where: this.pkgWhere(getScopedTenantId(user, overrideTenantId)),
+      order: { sizeGb: 'ASC' },
+    });
   }
 
   async getPackage(id: number, user: AdminUser) {
@@ -46,8 +49,11 @@ export class TopupsService {
     return pkg;
   }
 
-  createPackage(dto: CreateTopupPackageDto, user: AdminUser) {
-    const tenantId = getTenantId(user);
+  createPackage(dto: CreateTopupPackageDto, user: AdminUser, overrideTenantId?: number) {
+    const tenantId = getScopedTenantId(user, overrideTenantId);
+    if (tenantId === null) {
+      throw new BadRequestException('يجب تحديد العميل (tenantId) قبل إنشاء باقة');
+    }
     return this.pkgRepo.save(this.pkgRepo.create({
       name: dto.name,
       sizeGb: String(dto.sizeGb),
@@ -152,15 +158,16 @@ export class TopupsService {
 
     // Send CoA so MikroTik picks up new limits (and speed, if restored)
     const bonusForCoA = BigInt(profile.bonusRemainingBytes || '0');
+    const coaTenant = profile.tenantId ?? tenantId ?? null;
     if (planToApply) {
-      this.quotaEnforcer.sendCoAForPlan(username, planToApply, bonusForCoA).catch(e => this.logger.error(e));
+      this.quotaEnforcer.sendCoAForPlan(username, planToApply, bonusForCoA, coaTenant).catch(e => this.logger.error(e));
     } else {
       // Plan unchanged — only quota limits changed. Get current plan and CoA.
       const currentPlan = await this.planRepo.findOne({
         where: tenantId ? { id: profile.planId!, tenantId } : { id: profile.planId! },
       });
       if (currentPlan) {
-        this.quotaEnforcer.sendCoAForPlan(username, currentPlan, bonusForCoA).catch(e => this.logger.error(e));
+        this.quotaEnforcer.sendCoAForPlan(username, currentPlan, bonusForCoA, coaTenant).catch(e => this.logger.error(e));
       }
     }
 
@@ -215,7 +222,7 @@ export class TopupsService {
       const plan = await this.planRepo.findOne({
         where: tenantId ? { id: profile.planId, tenantId } : { id: profile.planId },
       });
-      if (plan) this.quotaEnforcer.sendCoAForPlan(username, plan, newBonus).catch(e => this.logger.error(e));
+      if (plan) this.quotaEnforcer.sendCoAForPlan(username, plan, newBonus, profile.tenantId ?? tenantId ?? null).catch(e => this.logger.error(e));
     }
 
     return { message: `تم مسح الباقة الإضافية` };
@@ -252,7 +259,7 @@ export class TopupsService {
       const plan = await this.planRepo.findOne({
         where: tenantId ? { id: profile.planId, tenantId } : { id: profile.planId },
       });
-      if (plan) this.quotaEnforcer.sendCoAForPlan(username, plan, 0n).catch(e => this.logger.error(e));
+      if (plan) this.quotaEnforcer.sendCoAForPlan(username, plan, 0n, profile.tenantId ?? tenantId ?? null).catch(e => this.logger.error(e));
     }
 
     return { message: `تم مسح الباقات الإضافية للمشترك ${username}` };

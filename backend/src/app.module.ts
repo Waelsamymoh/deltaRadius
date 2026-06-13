@@ -17,7 +17,15 @@ import { QuotaModule } from './modules/quota/quota.module';
 import { VoucherCardsModule } from './modules/voucher-cards/voucher-cards.module';
 import { TopupsModule } from './modules/topups/topups.module';
 import { OwnerAssistantsModule } from './modules/owner-assistants/owner-assistants.module';
+import { TenantAssistantsModule } from './modules/tenant-assistants/tenant-assistants.module';
+import { ReportsModule } from './modules/reports/reports.module';
+import { SalesReceiptsModule } from './modules/sales-receipts/sales-receipts.module';
+import { AuditLogsModule } from './modules/audit-logs/audit-logs.module';
+import { SubscriberPortalModule } from './modules/subscriber-portal/subscriber-portal.module';
 import { ServerHealthModule } from './modules/server-health/server-health.module';
+import { BackupModule } from './modules/backup/backup.module';
+import { ModemsModule } from './modules/modems/modems.module';
+import { SettingsModule } from './modules/settings/settings.module';
 import { TenantContextInterceptor } from './common/interceptors/tenant-context.interceptor';
 import databaseConfig from './config/database.config';
 
@@ -40,7 +48,15 @@ import databaseConfig from './config/database.config';
     VoucherCardsModule,
     TopupsModule,
     OwnerAssistantsModule,
+    TenantAssistantsModule,
+    ReportsModule,
+    SalesReceiptsModule,
+    AuditLogsModule,
+    SubscriberPortalModule,
     ServerHealthModule,
+    BackupModule,
+    ModemsModule,
+    SettingsModule,
   ],
   providers: [
     { provide: APP_PIPE, useValue: new ValidationPipe({ whitelist: true, transform: true }) },

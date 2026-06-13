@@ -1,8 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
 import {
   Users, Server, Wifi, CreditCard, TrendingUp, TrendingDown,
   Activity, BarChart3, RefreshCw, Cpu, MemoryStick, HardDrive,
-  Clock, ShieldCheck, AlertCircle,
+  Clock, ShieldCheck, AlertCircle, ChevronDown, ChevronLeft, Search,
 } from 'lucide-react'
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
@@ -13,6 +14,7 @@ import { useAuthStore } from '@/store/auth.store'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -21,6 +23,14 @@ function fmtBytes(bytes: number): string {
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
   const i = Math.floor(Math.log(bytes) / Math.log(1024))
   return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`
+}
+
+function fmtDuration(sec: number | null): string {
+  if (!sec) return '—'
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = sec % 60
+  return h > 0 ? `${h}س ${m}د` : m > 0 ? `${m}د ${s}ث` : `${s}ث`
 }
 
 function fmtDay(iso: string) {
@@ -137,6 +147,8 @@ function ServiceBadge({ label, status }: { label: string; status: 'active' | 'in
 // ── main ──────────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
+  const [sessionsOpen, setSessionsOpen] = useState(false)
+  const [sessionSearch, setSessionSearch] = useState('')
   const { data: dash, isLoading, refetch, isFetching } = useQuery({
     queryKey: ['dashboard-stats'],
     queryFn: () => accountingApi.dashboard().then(r => r.data),
@@ -148,6 +160,20 @@ export default function DashboardPage() {
     queryFn: () => accountingApi.sessions(true).then(r => r.data),
     refetchInterval: 15_000,
   })
+
+  // Normalise Arabic-Indic + Persian digits so a query typed on an Arabic
+  // keyboard still matches the Latin digits stored in IPs/names.
+  const normDigits = (s: string) => (s ?? '')
+    .replace(/[٠-٩]/g, d => String.fromCharCode(d.charCodeAt(0) - 0x0660 + 48))
+    .replace(/[۰-۹]/g, d => String.fromCharCode(d.charCodeAt(0) - 0x06F0 + 48))
+  const sessionQuery = normDigits(sessionSearch.trim()).toLowerCase()
+  const filteredSessions = sessionQuery
+    ? (sessions ?? []).filter((s: any) =>
+        (s.subscriber_name ?? '').toLowerCase().includes(sessionQuery) ||
+        (s.username ?? '').toLowerCase().includes(sessionQuery) ||
+        (s.network_name ?? '').toLowerCase().includes(sessionQuery) ||
+        normDigits(s.framedipaddress ?? '').includes(sessionQuery))
+    : (sessions ?? [])
 
   const { data: nasList } = useQuery({
     queryKey: ['nas'],
@@ -451,55 +477,99 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      {/* active sessions table */}
+      {/* active sessions table — collapsed by default, click header to expand */}
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Wifi className="h-5 w-5 text-green-500" />
-            الجلسات النشطة الآن
-            {sessions && (
-              <Badge variant="success" className="mr-2">{sessions.length} متصل</Badge>
-            )}
-          </CardTitle>
-        </CardHeader>
+        <button type="button" onClick={() => setSessionsOpen(o => !o)} className="w-full text-right">
+          <CardHeader className="cursor-pointer hover:bg-muted/30 transition rounded-t">
+            <CardTitle className="flex items-center gap-2 text-base">
+              {sessionsOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronLeft className="h-4 w-4 text-muted-foreground" />}
+              <Wifi className="h-5 w-5 text-green-500" />
+              الجلسات النشطة الآن
+              {sessions && (
+                <Badge variant="success" className="mr-2">{sessions.length} متصل</Badge>
+              )}
+              {!sessionsOpen && (
+                <span className="text-xs font-normal text-muted-foreground mr-auto">اضغط للعرض</span>
+              )}
+            </CardTitle>
+          </CardHeader>
+        </button>
+        {sessionsOpen && (
         <CardContent>
           {!sessions?.length ? (
             <p className="text-muted-foreground text-sm py-4 text-center">لا توجد جلسات نشطة</p>
           ) : (
             <div className="overflow-x-auto">
+              <div className="relative mb-3 max-w-xs">
+                <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  value={sessionSearch}
+                  onChange={e => setSessionSearch(e.target.value)}
+                  placeholder="بحث بالاسم أو الـ IP..."
+                  className="pr-9"
+                />
+              </div>
+              {filteredSessions.length === 0 ? (
+                <p className="text-muted-foreground text-sm py-4 text-center">لا توجد نتائج للبحث</p>
+              ) : (
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b">
-                    <th className="text-right py-2 px-3 font-medium text-muted-foreground">المستخدم</th>
-                    <th className="text-right py-2 px-3 font-medium text-muted-foreground">IP الجهاز</th>
-                    <th className="text-right py-2 px-3 font-medium text-muted-foreground">IP المُسند</th>
+                    <th className="text-right py-2 px-3 font-medium text-muted-foreground">اسم العميل</th>
+                    <th className="text-right py-2 px-3 font-medium text-muted-foreground">اسم الشبكة</th>
+                    <th className="text-right py-2 px-3 font-medium text-muted-foreground">IP المشترك</th>
+                    <th className="text-right py-2 px-3 font-medium text-muted-foreground">بدأت</th>
+                    <th className="text-right py-2 px-3 font-medium text-muted-foreground">المدة</th>
                     <th className="text-right py-2 px-3 font-medium text-muted-foreground">تنزيل</th>
                     <th className="text-right py-2 px-3 font-medium text-muted-foreground">رفع</th>
-                    <th className="text-right py-2 px-3 font-medium text-muted-foreground">وقت البداية</th>
+                    <th className="text-right py-2 px-3 font-medium text-muted-foreground">إجمالي التحميل</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {sessions.slice(0, 15).map((s: {
-                    radacctid: number; username: string; nasipaddress: string;
-                    framedipaddress: string; acctstarttime: string;
+                  {filteredSessions.map((s: {
+                    radacctid: number; username: string;
+                    subscriber_name?: string | null; network_name?: string | null;
+                    nasipaddress: string; framedipaddress: string;
+                    acctstarttime: string; acctsessiontime: number | null;
                     acctinputoctets: number; acctoutputoctets: number;
                   }) => (
                     <tr key={s.radacctid} className="border-b hover:bg-muted/30">
-                      <td className="py-2 px-3 font-medium">{s.username}</td>
-                      <td className="py-2 px-3 text-muted-foreground font-mono text-xs">{s.nasipaddress}</td>
-                      <td className="py-2 px-3 font-mono text-xs">{s.framedipaddress || '—'}</td>
-                      <td className="py-2 px-3 text-cyan-600 text-xs">{fmtBytes(s.acctoutputoctets ?? 0)}</td>
-                      <td className="py-2 px-3 text-pink-600 text-xs">{fmtBytes(s.acctinputoctets  ?? 0)}</td>
+                      <td className="py-2 px-3">
+                        <span className="font-medium">{s.subscriber_name || s.username}</span>
+                        {s.subscriber_name && (
+                          <span className="block text-[10px] text-muted-foreground font-mono">{s.username}</span>
+                        )}
+                      </td>
+                      <td className="py-2 px-3 text-muted-foreground">{s.network_name || '—'}</td>
+                      <td className="py-2 px-3 font-mono">
+                        {s.framedipaddress ? (
+                          <a
+                            href={`http://${s.framedipaddress}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-primary underline underline-offset-2 hover:text-primary/80"
+                            title="فتح راوتر المشترك في تبويب جديد"
+                          >
+                            {s.framedipaddress}
+                          </a>
+                        ) : '—'}
+                      </td>
                       <td className="py-2 px-3 text-muted-foreground text-xs">
                         {s.acctstarttime ? new Date(s.acctstarttime).toLocaleString('ar-EG') : '—'}
                       </td>
+                      <td className="py-2 px-3">{fmtDuration(s.acctsessiontime)}</td>
+                      <td className="py-2 px-3 text-blue-600">{fmtBytes(Number(s.acctoutputoctets) || 0)}</td>
+                      <td className="py-2 px-3 text-green-600">{fmtBytes(Number(s.acctinputoctets) || 0)}</td>
+                      <td className="py-2 px-3 font-bold">{fmtBytes((Number(s.acctoutputoctets) || 0) + (Number(s.acctinputoctets) || 0))}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              )}
             </div>
           )}
         </CardContent>
+        )}
       </Card>
     </div>
   )

@@ -4,7 +4,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import {
   ArrowRight, Building2, Download, RefreshCw, KeyRound, ShieldCheck,
-  Trash2, Save, Lock, Users, Network, ListChecks, Activity,
+  Trash2, Save, Lock, Users, Network, ListChecks, Activity, ExternalLink,
+  CreditCard, Database, DatabaseBackup,
 } from 'lucide-react'
 import { tenantsApi } from '@/api/endpoints'
 import { useAuthStore } from '@/store/auth.store'
@@ -33,7 +34,15 @@ type Tenant = {
 
 type Summary = {
   tenant: Tenant
-  counts: { users: number; nas: number; plans: number; activeSessions: number; totalSessions: number }
+  counts: {
+    users: number
+    nas: number
+    plans: number
+    cards: number
+    topups: number
+    activeSessions: number
+    totalSessions: number
+  }
 }
 
 type EditForm = {
@@ -56,18 +65,28 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url)
 }
 
-function StatCard({ icon: Icon, label, value, accent }: { icon: any; label: string; value: number | string; accent?: string }) {
+function StatCard({
+  icon: Icon, label, value, accent, to,
+}: {
+  icon: any; label: string; value: number | string; accent?: string; to?: string
+}) {
+  const navigate = useNavigate()
+  const clickable = !!to
   return (
-    <Card>
+    <Card
+      className={clickable ? 'cursor-pointer transition-colors hover:bg-muted/40' : ''}
+      onClick={clickable ? () => navigate(to!) : undefined}
+    >
       <CardContent className="pt-6">
         <div className="flex items-center gap-3">
           <div className={`rounded-md p-2 ${accent ?? 'bg-muted'}`}>
             <Icon className="h-5 w-5" />
           </div>
-          <div>
+          <div className="flex-1 min-w-0">
             <p className="text-xs text-muted-foreground">{label}</p>
             <p className="text-2xl font-semibold">{value}</p>
           </div>
+          {clickable && <ExternalLink className="h-4 w-4 text-muted-foreground shrink-0" />}
         </div>
       </CardContent>
     </Card>
@@ -187,23 +206,57 @@ export default function TenantDetailPage() {
             </p>
           </div>
         </div>
-        {isOwner && (
+        <div className="flex items-center gap-2">
           <Button
             variant="outline" size="sm"
-            onClick={() => setDeleteOpen(true)}
-            className="gap-1.5 text-amber-500 border-amber-500/40 hover:bg-amber-500/10 hover:text-amber-400"
+            onClick={() => navigate(`/tenant-backup?tenant=${tenantId}`)}
+            className="gap-1.5"
           >
-            <Trash2 className="h-4 w-4" /> أرشفة العميل
+            <DatabaseBackup className="h-4 w-4" /> نسخة احتياطية
           </Button>
-        )}
+          {isOwner && (
+            <Button
+              variant="outline" size="sm"
+              onClick={() => setDeleteOpen(true)}
+              className="gap-1.5 text-amber-500 border-amber-500/40 hover:bg-amber-500/10 hover:text-amber-400"
+            >
+              <Trash2 className="h-4 w-4" /> أرشفة العميل
+            </Button>
+          )}
+        </div>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard icon={Users}      label="مشتركين RADIUS"    value={summary.counts.users}          accent="bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300" />
-        <StatCard icon={Network}    label="أجهزة NAS"          value={summary.counts.nas}            accent="bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300" />
-        <StatCard icon={ListChecks} label="الباقات"             value={summary.counts.plans}          accent="bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300" />
-        <StatCard icon={Activity}   label="جلسات نشطة الآن"     value={summary.counts.activeSessions} accent="bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300" />
+      {/* Stats — clickable cards scope each resource page to this tenant */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        <StatCard
+          icon={Users} label="المشتركين" value={summary.counts.users}
+          accent="bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
+          to={`/users?tenant=${tenantId}`}
+        />
+        <StatCard
+          icon={Network} label="أجهزة NAS" value={summary.counts.nas}
+          accent="bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300"
+          to={`/nas?tenant=${tenantId}`}
+        />
+        <StatCard
+          icon={ListChecks} label="الباقات" value={summary.counts.plans}
+          accent="bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300"
+          to={`/plans?tenant=${tenantId}`}
+        />
+        <StatCard
+          icon={CreditCard} label="الكروت" value={summary.counts.cards}
+          accent="bg-pink-100 text-pink-700 dark:bg-pink-950 dark:text-pink-300"
+          to={`/cards?tenant=${tenantId}`}
+        />
+        <StatCard
+          icon={Database} label="باقات الكوتة" value={summary.counts.topups}
+          accent="bg-cyan-100 text-cyan-700 dark:bg-cyan-950 dark:text-cyan-300"
+          to={`/topups?tenant=${tenantId}`}
+        />
+        <StatCard
+          icon={Activity} label="جلسات نشطة" value={summary.counts.activeSessions}
+          accent="bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300"
+        />
       </div>
 
       {/* Tenant Info */}
